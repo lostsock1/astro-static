@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/bootstrap-result.schema.json",
+  "title": "Astro Static Bootstrap Result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_name",
+    "server_ip",
+    "site_dir",
+    "site_url",
+    "gitea_url",
+    "gitea_user"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "project_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "server_ip": {
+      "type": "string"
+    },
+    "domain": {
+      "type": "string"
+    },
+    "use_tls": {
+      "type": "boolean"
+    },
+    "site_dir": {
+      "type": "string",
+      "pattern": "^/var/www/sites/[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "site_host": {
+      "type": "string",
+      "pattern": "^([A-Za-z0-9.-]+|)$"
+    },
+    "site_port": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "site_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "gitea_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "gitea_user": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+    },
+    "gitea_repo_url": {
+      "type": "string"
+    },
+    "gitea_repo_ssh": {
+      "type": "string"
+    },
+    "node_version": {
+      "type": "string"
+    },
+    "bun_version": {
+      "type": "string"
+    },
+    "system_bootstrapped": {
+      "type": "string"
+    },
+    "system_phases_run": {
+      "type": "string"
+    },
+    "caddy_site_file": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

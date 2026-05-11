@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/vps-connection.schema.json",
+  "title": "Astro Static VPS Connection",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_name",
+    "ssh_host",
+    "ssh_port",
+    "ssh_user",
+    "ssh_key"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "project_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "ssh_host": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9.-]+$"
+    },
+    "ssh_port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "ssh_user": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"
+    },
+    "ssh_key": {
+      "type": "string",
+      "pattern": "^(/Users/[^\u0000\n]+|~/.ssh/[^\u0000\n]+)$"
+    },
+    "site_dir": {
+      "type": "string",
+      "pattern": "^/var/www/sites/[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "site_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "server_ip": {
+      "type": "string"
+    },
+    "gitea_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "gitea_user": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+    },
+    "gitea_pass": {
+      "type": "string"
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^([A-Za-z0-9.-]+|auto|none)$"
+    },
+    "use_tls": {
+      "type": "boolean"
+    },
+    "site_host": {
+      "type": "string",
+      "pattern": "^([A-Za-z0-9.-]+|)$"
+    },
+    "site_port": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "gitea_repo_url": {
+      "type": "string"
+    },
+    "gitea_repo_ssh": {
+      "type": "string"
+    },
+    "node_version": {
+      "type": "string"
+    },
+    "bun_version": {
+      "type": "string"
+    },
+    "system_bootstrapped": {
+      "type": "string"
+    },
+    "system_phases_run": {
+      "type": "string"
+    },
+    "caddy_site_file": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

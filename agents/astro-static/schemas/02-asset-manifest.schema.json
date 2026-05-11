@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/02-asset-manifest.schema.json",
+  "title": "Astro Static Asset Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "logo",
+    "favicon",
+    "og_image",
+    "theme",
+    "font_config"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "logo": {
+      "type": "object",
+      "required": [
+        "source",
+        "primary_path"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "generated",
+            "provided"
+          ]
+        },
+        "primary_path": {
+          "type": "string"
+        },
+        "svg": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "png": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generated": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "favicon": {
+      "type": "object",
+      "required": [
+        "ico",
+        "png_32",
+        "png_16",
+        "apple_touch"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "og_image": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "additionalProperties": true
+    },
+    "theme": {
+      "type": "object",
+      "required": [
+        "css"
+      ],
+      "additionalProperties": true
+    },
+    "font_config": {
+      "type": "string"
+    },
+    "content_images": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/contentImage"
+      }
+    },
+    "video_backgrounds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/videoBackground"
+      }
+    }
+  },
+  "$defs": {
+    "contentImage": {
+      "type": "object",
+      "required": ["id", "path"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "type": { "type": "string" },
+        "dimensions": { "type": ["string", "null"] },
+        "used_in": { "type": "array", "items": { "type": "string" } },
+        "content_collection": { "type": ["string", "null"] },
+        "content_entry": { "type": ["string", "null"] },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "generated", "failed", "placeholder"]
+        },
+        "fallback_reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "videoBackground": {
+      "type": "object",
+      "required": ["id", "output_path"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "output_path": { "type": "string", "minLength": 1 },
+        "type": { "type": "string" },
+        "poster_path": { "type": ["string", "null"] },
+        "aspect_ratio": { "type": "string" },
+        "duration": { "type": "string" },
+        "image_url": { "type": ["string", "null"] },
+        "used_in": { "type": "array", "items": { "type": "string" } },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "generated", "failed"]
+        },
+        "fallback": { "type": ["string", "null"] },
+        "fallback_reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/00-brief.schema.json",
+  "title": "Astro Static Intake Brief",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_name",
+    "client_name",
+    "site_type"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "client_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "site_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "site_category": {
+      "type": "string"
+    },
+    "location": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "goals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reference_urls": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      }
+    },
+    "competitor_urls": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      }
+    },
+    "domain": {
+      "type": ["string", "null"],
+      "pattern": "^([A-Za-z0-9.-]+|auto|none)?$"
+    },
+    "required_pages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "existing_brand": {
+      "type": "object",
+      "properties": {
+        "has_logo": {
+          "type": "boolean"
+        },
+        "has_colors": {
+          "type": "boolean"
+        },
+        "has_photography": {
+          "type": "boolean"
+        },
+        "assets_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "brand_notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "content_constraints": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "design_references": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

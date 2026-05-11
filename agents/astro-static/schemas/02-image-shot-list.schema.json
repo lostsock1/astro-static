@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/02-image-shot-list.schema.json",
+  "title": "Astro Static Image Shot List",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_name",
+    "images"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "project_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "images": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    }
+  },
+  "$defs": {
+    "image": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "prompt",
+        "output_path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "logo",
+            "og-image",
+            "hero",
+            "gallery",
+            "portrait",
+            "product",
+            "news-teaser",
+            "illustration",
+            "cta-bg",
+            "section-bg",
+            "footer-bg"
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dimensions": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]+x[0-9]+$"
+        },
+        "used_in": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "content_collection": {
+          "type": ["string", "null"]
+        },
+        "content_entry": {
+          "type": ["string", "null"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "generated", "failed", "placeholder"]
+        },
+        "fallback_reason": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

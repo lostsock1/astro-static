@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/00-pipeline-state.schema.json",
+  "title": "Astro Static Pipeline State",
+  "type": "object",
+  "required": [
+    "project_name",
+    "started_at",
+    "updated_at",
+    "needs_human_review",
+    "phases"
+  ],
+  "properties": {
+    "project_name": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "needs_human_review": {
+      "type": "boolean"
+    },
+    "review_file": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phases": {
+      "type": "object",
+      "required": [
+        "0_bootstrap",
+        "1_design_extraction",
+        "2_research",
+        "2_5_brief_validation",
+        "3_asset_generation",
+        "3_5_image_generation",
+        "3_6_video_generation",
+        "_bootstrap_join",
+        "4_frontend_build",
+        "5_deploy"
+      ],
+      "properties": {
+        "0_bootstrap": {
+          "$ref": "#/$defs/phaseWithLaunch"
+        },
+        "1_design_extraction": {
+          "$ref": "#/$defs/phase"
+        },
+        "2_research": {
+          "$ref": "#/$defs/phase"
+        },
+        "2_5_brief_validation": {
+          "$ref": "#/$defs/phase"
+        },
+        "3_asset_generation": {
+          "$ref": "#/$defs/phase"
+        },
+        "3_5_image_generation": {
+          "$ref": "#/$defs/phase"
+        },
+        "3_6_video_generation": {
+          "$ref": "#/$defs/phase"
+        },
+        "_bootstrap_join": {
+          "$ref": "#/$defs/joinPhase"
+        },
+        "4_frontend_build": {
+          "$ref": "#/$defs/phase"
+        },
+        "5_deploy": {
+          "$ref": "#/$defs/phase"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "phaseStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "launched",
+        "completed",
+        "skipped",
+        "failed",
+        "halted_for_review"
+      ]
+    },
+    "phase": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/phaseStatus"
+        },
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "phaseWithLaunch": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/phaseStatus"
+        },
+        "launched_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pid_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "log_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exit_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "joinPhase": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed",
+            "failed",
+            "halted_for_review"
+          ]
+        },
+        "completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

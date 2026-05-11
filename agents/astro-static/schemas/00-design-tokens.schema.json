@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/00-design-tokens.schema.json",
+  "title": "Astro Static Design Tokens",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_urls",
+    "color",
+    "typography",
+    "spacing",
+    "shadow",
+    "radius"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "source_urls": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failed_sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "extracted_at": {
+      "type": "string"
+    },
+    "color": {
+      "type": "object"
+    },
+    "typography": {
+      "type": "object"
+    },
+    "spacing": {
+      "type": "object"
+    },
+    "shadow": {
+      "type": "object"
+    },
+    "radius": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

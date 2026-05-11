@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/02-font-config.schema.json",
+  "title": "Astro Static Font Config",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "heading",
+    "body"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "heading": {
+      "$ref": "#/$defs/font"
+    },
+    "body": {
+      "$ref": "#/$defs/font"
+    }
+  },
+  "$defs": {
+    "font": {
+      "type": "object",
+      "required": [
+        "family",
+        "google_url"
+      ],
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "weights": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "style": {
+          "type": "string"
+        },
+        "google_url": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

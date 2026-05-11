@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/02-video-shot-list.schema.json",
+  "title": "Astro Static Video Shot List",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_name",
+    "videos"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "project_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "model": {
+      "type": "string"
+    },
+    "videos": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/video"
+      }
+    }
+  },
+  "$defs": {
+    "video": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "prompt",
+        "output_path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "hero-bg",
+            "section-bg",
+            "cta-bg",
+            "footer-bg"
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "poster_path": {
+          "type": ["string", "null"]
+        },
+        "aspect_ratio": {
+          "type": "string",
+          "enum": ["16:9", "9:16"]
+        },
+        "duration": {
+          "type": "string",
+          "enum": ["5", "10"]
+        },
+        "image_url": {
+          "type": ["string", "null"]
+        },
+        "used_in": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "generated", "failed"]
+        },
+        "fallback": {
+          "type": ["string", "null"]
+        },
+        "fallback_reason": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

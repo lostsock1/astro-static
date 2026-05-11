@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/01-creative-brief.schema.json",
+  "title": "Astro Static Creative Brief",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "client_name",
+    "site_type",
+    "brand_personality",
+    "content_structure",
+    "competitive_analysis",
+    "recommendations",
+    "review_flags",
+    "content_model",
+    "color_direction",
+    "typography_direction"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "_requires_human_confirmation": {
+      "type": "boolean"
+    },
+    "_clarifications": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "review_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "issue_type",
+          "field_path",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "blocking",
+              "warning",
+              "advisory"
+            ]
+          },
+          "issue_type": {
+            "type": "string"
+          },
+          "field_path": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "proposed_placeholder": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "client_name": {
+      "type": "string"
+    },
+    "site_type": {
+      "type": "string"
+    },
+    "site_category": {
+      "type": "string"
+    },
+    "brand_personality": {
+      "type": "object"
+    },
+    "color_direction": {
+      "type": "object"
+    },
+    "typography_direction": {
+      "type": "object"
+    },
+    "content_structure": {
+      "type": "object",
+      "required": [
+        "pages"
+      ],
+      "properties": {
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "slug",
+              "purpose"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "purpose": {
+                "type": "string"
+              },
+              "sections": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "priority": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "special_sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "competitive_analysis": {
+      "type": "object"
+    },
+    "recommendations": {
+      "type": "object"
+    },
+    "existing_brand": {
+      "type": "object"
+    },
+    "content_model": {
+      "type": "object",
+      "required": [
+        "collections"
+      ],
+      "properties": {
+        "collections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "type",
+              "fields"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "managed_by": {
+                "type": "string"
+              },
+              "sample_entries": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "type"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+                    },
+                    "type": {
+                      "type": "string",
+                      "description": "Researcher-emitted type name. Frontend-builder maps each to an Astro Content Collections/Zod field. Keep this enum in sync with the mapping table in frontend-builder.md §3.",
+                      "enum": [
+                        "string",
+                        "text",
+                        "slug",
+                        "date",
+                        "datetime",
+                        "number",
+                        "integer",
+                        "boolean",
+                        "checkbox",
+                        "image",
+                        "url",
+                        "select",
+                        "multiselect",
+                        "array",
+                        "object",
+                        "markdoc",
+                        "mdx",
+                        "relationship",
+                        "multiRelationship"
+                      ]
+                    },
+                    "required": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "static_pages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
