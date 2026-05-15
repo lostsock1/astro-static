@@ -28,7 +28,7 @@ PROJECT=$(jq -r '.project_name' "$VPS_JSON")
 GITEA_PASS=$(jq -r '.gitea_pass // empty' "$VPS_JSON")
 if [[ -z "$GITEA_PASS" ]]; then
   GITEA_PASS=$(openssl rand -base64 24 | tr -d '=+/\n' | cut -c1-24)
-  jq --arg p "$GITEA_PASS" --arg u "siteadmin" \
+  jq --arg p "$GITEA_PASS" --arg u "$PROJECT" \
      '.gitea_pass = $p | .gitea_user = (.gitea_user // $u)' \
      "$VPS_JSON" > "$VPS_JSON.tmp" && mv "$VPS_JSON.tmp" "$VPS_JSON"
   chmod 600 "$VPS_JSON"   # password is now inside — keep it owner-only
@@ -39,7 +39,10 @@ fi
 # ssh-keygen -R is idempotent and safe — it only removes the specific host entry.
 ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$HOST" 2>/dev/null || true
 
-SSH="ssh -p $PORT -i $KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 $USR@$HOST"
+_astro_static_ssh() {
+  ssh -p "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$USR@$HOST" "$@"
+}
+SSH=_astro_static_ssh
 
 # Initialize log with timestamp
 echo "=== Bootstrap started $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" > "$PROJECT_DIR/pipeline/bootstrap.log"
@@ -67,12 +70,13 @@ fi
 # on the local side — they expand on the VPS from the \"${…}\" interpolations
 # our outer $SSH fed through. GITEA_PASS carries the per-project random value
 # written to vps-connection.json above.
+GITEA_USER=$(jq -r '.gitea_user // "siteadmin"' "$VPS_JSON")
 $SSH "cat > /tmp/pipeline-setup-wrapper.sh << 'WRAPPER'
 #!/usr/bin/env bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export PROJECT_NAME=\"${PROJECT}\"
-export GITEA_ADMIN_USER=\"siteadmin\"
+export GITEA_ADMIN_USER=\"${GITEA_USER}\"
 export GITEA_ADMIN_PASS=\"${GITEA_PASS}\"
 export GITEA_ADMIN_EMAIL=\"admin@localhost\"
 export DOMAIN=\"auto\"

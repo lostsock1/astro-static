@@ -1075,7 +1075,8 @@ if $GITEA_AUTH_OK; then
   # entire .git/ is already excluded from the working tree's commit graph) and
   # use --local to scope the helper to this repo only.
   CRED_FILE="${SITE_DIR}/.git/.gitea-credentials"
-  printf 'http://%s:%s@127.0.0.1:3000\n' "$GITEA_ADMIN_USER" "$GITEA_ADMIN_PASS" > "$CRED_FILE"
+  URLENC_PASS=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$GITEA_ADMIN_PASS" 2>/dev/null || printf '%s' "$GITEA_ADMIN_PASS")
+  printf 'http://%s:%s@127.0.0.1:3000\n' "$GITEA_ADMIN_USER" "$URLENC_PASS" > "$CRED_FILE"
   chmod 600 "$CRED_FILE"
   if id -u debian >/dev/null 2>&1; then
     chown debian:debian "$CRED_FILE"

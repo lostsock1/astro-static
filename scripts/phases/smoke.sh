@@ -24,7 +24,7 @@ fail() {
 [ -f index.html ] || fail "no_index_html"
 
 # 1. index.html links at least one stylesheet (BaseLayout must import theme).
-grep -qE '<link[^>]*rel="stylesheet"' index.html \
+grep -qE '<link[^>]*(rel="stylesheet"[^>]*href=|href="[^"]+"[^>]*rel="stylesheet")' index.html \
   || fail "no_stylesheet_link"
 
 # 2. Every linked CSS file resolves on disk and is non-empty.
@@ -33,7 +33,7 @@ while IFS= read -r href; do
   [ -n "$href" ] || continue
   path="${href#/}"
   [ -s "$path" ] || fail "stylesheet_missing_or_empty"
-done < <(grep -oE 'rel="stylesheet"[^>]*href="[^"]+"' index.html \
+done < <(grep -oE '<link[^>]*(rel="stylesheet"[^>]*href="[^"]+"|href="[^"]+"[^>]*rel="stylesheet")[^>]*>' index.html \
          | grep -oE 'href="[^"]+"' | cut -d'"' -f2)
 
 # 3. Theme tokens actually emitted — at least one --color-* or --font-*
@@ -61,7 +61,7 @@ while IFS= read -r href; do
   [ -z "$path" ] && path="index.html"
   [ -f "$path" ] || [ -f "$path/index.html" ] || [ -f "${path%/}.html" ] \
     || fail "nav_link_broken"
-done < <(grep -oE 'href="/[^"#?]*"' index.html | cut -d'"' -f2 | sort -u)
+done < <(grep -oE '<a[^>]+href="/[^"#?]*"' index.html | grep -oE 'href="[^"]+"' | cut -d'"' -f2 | sort -u)
 
 # 5. No unrendered template leakage. Mustache-style {{...}} in output usually
 #    means a component was rendered as a string instead of evaluated.

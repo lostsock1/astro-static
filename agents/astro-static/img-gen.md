@@ -3,7 +3,6 @@ description: Generates images via the PPQ.AI API using nano-banana-pro. Called b
 mode: subagent
 model: deepseek/deepseek-v4-flash
 temperature: 0.2
-hidden: true
 permission:
   edit: allow
   bash:

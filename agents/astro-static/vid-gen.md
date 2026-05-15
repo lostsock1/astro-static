@@ -3,7 +3,6 @@ description: Generates video backgrounds via the PPQ.AI API using kling-3.0. Cal
 mode: subagent
 model: deepseek/deepseek-v4-flash
 temperature: 0.2
-hidden: true
 permission:
   edit: allow
   bash:

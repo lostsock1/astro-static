@@ -30,7 +30,10 @@ USR=$(jq  -r '.ssh_user' "$VPS_JSON")
 HOST=$(jq -r '.ssh_host' "$VPS_JSON")
 PROJECT=$(jq -r '.project_name' "$VPS_JSON")
 
-SSH="ssh -p $PORT -i $KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 $USR@$HOST"
+_astro_static_ssh() {
+  ssh -p "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$USR@$HOST" "$@"
+}
+SSH=_astro_static_ssh
 
 # --- Step 1: Wait for background bootstrap to finish ---
 # bg-bootstrap.sh owns the remote wait (single long-lived SSH coalesces what

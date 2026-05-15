@@ -461,12 +461,12 @@ jq --argjson images "$(jq '[.images[] | {
 **Step 5: Validate**
 ```bash
 MISSING=""
-for path in $(jq -r '.content_images[].output_path' pipeline/02-asset-manifest.json 2>/dev/null); do
+for path in $(jq -r '.content_images[].path' pipeline/02-asset-manifest.json 2>/dev/null); do
   [ -f "$path" ] || MISSING="$MISSING $path"
 done
 [ -z "$MISSING" ] || { echo "STATUS:MISSING_IMAGES paths=$MISSING"; exit 1; }
 
-for path in $(jq -r '.content_images[].output_path' pipeline/02-asset-manifest.json 2>/dev/null); do
+for path in $(jq -r '.content_images[].path' pipeline/02-asset-manifest.json 2>/dev/null); do
   SIZE=$(du -k "$path" | cut -f1)
   [ "$SIZE" -gt 5 ] || { echo "STATUS:IMAGE_TOO_SMALL path=$path size_kb=$SIZE"; exit 1; }
 done
@@ -482,8 +482,8 @@ bash ~/.config/opencode/astro-static/phases/asset-fallbacks.sh images
 python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase assets . --pipeline-dir pipeline/
 ```
 
-The fallback writes valid SVG placeholder assets at the requested paths, records
-`"status": "placeholder"`, and prevents broken or 0-byte files. A placeholder is
+The fallback writes valid SVG placeholder assets at safe `.svg` paths, records
+`"status": "placeholder"`, emits matching `.lqip.txt` files, normalizes the manifest to `path`, and prevents broken or 0-byte files. A placeholder is
 acceptable for a first deploy only when the phase status notes explicitly say
 `placeholder refinement needed`.
 
@@ -602,6 +602,8 @@ timeout 180 rsync -avz --timeout=60 -e "ssh -p $PORT -i $KEY -o ConnectTimeout=1
   src/    $USER@$HOST:$SITE_DIR/src/
 timeout 180 rsync -avz --timeout=60 -e "ssh -p $PORT -i $KEY -o ConnectTimeout=10" \
   public/ $USER@$HOST:$SITE_DIR/public/
+timeout 180 rsync -avz --timeout=60 -e "ssh -p $PORT -i $KEY -o ConnectTimeout=10" \
+  pipeline/ $USER@$HOST:$SITE_DIR/pipeline/
 ```
 `timeout` exit 124 = hung. Retry once; on second failure record via `append_retry "phase4-rsync" "STATUS:RSYNC_STALL exit=124"` and write `HUMAN_REVIEW.md`.
 

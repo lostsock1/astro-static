@@ -382,30 +382,16 @@ const {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    opacity: 0;
+    opacity: 1;
     transition: opacity var(--duration-slow, 400ms) var(--ease-out, cubic-bezier(0.16, 1, 0.3, 1));
   }
-  .lqip-img[data-loaded='true'] {
-    opacity: 1;
-  }
   @media (prefers-reduced-motion: reduce) {
-    /* Snap-in instead of fade, but still hide the LQIP underneath. */
     .lqip-img { transition-duration: 0.01ms; }
   }
 </style>
-
-<script>
-  // Mark each LQIP image as loaded so the CSS fade-in fires. We don't use
-  // inline onload= so the component is CSP-friendly.
-  document.querySelectorAll<HTMLImageElement>('.lqip-img').forEach((img) => {
-    if (img.complete && img.naturalWidth > 0) {
-      img.dataset.loaded = 'true';
-    } else {
-      img.addEventListener('load', () => { img.dataset.loaded = 'true'; }, { once: true });
-    }
-  });
-</script>
 ```
+
+The full image is never hidden behind JavaScript-only state. The LQIP works as a no-JS background placeholder while the browser decodes the real image; if JavaScript is disabled, the final image still renders normally.
 
 **3.5a. Update content entry frontmatter:** For each content entry that has a matching image in the shot list, ensure its frontmatter has the `image` field set to the correct relative path.
 
@@ -724,7 +710,7 @@ For each `special_sections` from the brief:
 ### Step 7: Sync and Build
 ```bash
 # Sync everything to VPS
-rsync -avz --exclude='node_modules' --exclude='.git' --exclude='dist' --exclude='pipeline' --exclude='.opencode' \
+rsync -avz --exclude='node_modules' --exclude='.git' --exclude='dist' --exclude='.opencode' \
   -e "ssh -p $PORT -i $KEY" ./ "$VPS:$SITE_DIR/"
 
 # Install, type-check, and build on VPS using bun. Never pipe through `tail`
@@ -755,7 +741,7 @@ Do not report `BUILD_OK` if `astro check` reports errors. A successful static
 build with type/syntax errors is considered a failed Phase 4.
 
 ## Quality Bar
-- All `<img>` → `<Image>` from `astro:assets`
+- All local source images → `<Image>` from `astro:assets`; raw `<img>` is allowed only for public/static URLs such as video poster fallbacks or externally supplied URLs that Astro cannot import
 - All images have `alt` text
 - Focus states on interactive elements (via `:focus-visible`)
 - Semantic HTML: `<header>`, `<main>`, `<footer>`, `<nav>`, `<section>`

@@ -52,6 +52,7 @@ PROFILES = {
             '02-font-config.json':      '02-font-config.schema.json',
             '02-asset-manifest.json':   '02-asset-manifest.schema.json',
             '02-image-shot-list.json':  '02-image-shot-list.schema.json',
+            '02-video-shot-list.json':  '02-video-shot-list.schema.json',
             '00-pipeline-state.json':   '00-pipeline-state.schema.json',
         },
     },
@@ -74,8 +75,7 @@ def _phases_for(profile: str) -> dict[str, dict[str, Any]]:
     if profile == 'ispconfig':
         connection_required = set()  # no vps-connection in ispconfig profile
         all_artifacts = set(PROFILES['ispconfig']['artifacts'].keys())
-        # ispconfig doesn't ship video gen
-        video_shot_list = set()
+        video_shot_list = {'02-video-shot-list.json'}
     else:
         connection_required = {'vps-connection.json'}
         all_artifacts = set(PROFILES['astro-static']['artifacts'].keys())
@@ -346,7 +346,7 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
         check_layout = bool(config['check_layout'])
         check_asset_paths = bool(config['check_asset_paths'])
     else:
-        required = set(ARTIFACTS.keys()) if require_all else set(ARTIFACTS.keys())
+        required = set(ARTIFACTS.keys()) if require_all else {'00-brief.json'}
         optional = set()
         strict = require_all
         check_theme = require_all

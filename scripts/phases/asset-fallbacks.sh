@@ -45,6 +45,28 @@ path.write_text(svg, encoding="utf-8")
 PY
 }
 
+placeholder_path_for() {
+  local path="$1"
+  case "$path" in
+    *.svg) printf '%s\n' "$path" ;;
+    *) printf '%s.svg\n' "${path%.*}" ;;
+  esac
+}
+
+write_lqip_placeholder() {
+  local image_path="$1" lqip_path
+  lqip_path="${image_path%.*}.lqip.txt"
+  mkdir -p "$(dirname "$lqip_path")"
+  python3 - "$lqip_path" <<'PY'
+from pathlib import Path
+import base64
+import sys
+
+svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="16"><rect width="24" height="16" fill="#4a3625"/><circle cx="18" cy="4" r="4" fill="#d4922a" opacity=".45"/></svg>'
+Path(sys.argv[1]).write_text('data:image/svg+xml;base64,' + base64.b64encode(svg.encode()).decode('ascii'), encoding='ascii')
+PY
+}
+
 dimensions_to_wh() {
   local dims="$1" default_w="$2" default_h="$3"
   if [[ "$dims" =~ ^([0-9]+)x([0-9]+)$ ]]; then
@@ -65,15 +87,22 @@ case "$MODE" in
       dims=$(jq -r ".images[$i].dimensions // empty" "$IMAGE_SHOTS")
       read -r w h < <(dimensions_to_wh "$dims" 1200 800)
       if [ ! -s "$path" ] || [ "$(wc -c < "$path")" -lt 1024 ]; then
-        write_svg_placeholder "$path" "$id placeholder" "$w" "$h"
-        jq ".images[$i].status = \"placeholder\" | .images[$i].fallback_reason = \"generation_missing_or_too_small\"" \
+        placeholder_path=$(placeholder_path_for "$path")
+        write_svg_placeholder "$placeholder_path" "$id placeholder" "$w" "$h"
+        write_lqip_placeholder "$placeholder_path"
+        jq --arg placeholder_path "$placeholder_path" ".images[$i].output_path = \$placeholder_path | .images[$i].status = \"placeholder\" | .images[$i].fallback_reason = \"generation_missing_or_too_small\"" \
           "$IMAGE_SHOTS" > "$IMAGE_SHOTS.tmp" && mv "$IMAGE_SHOTS.tmp" "$IMAGE_SHOTS"
       elif [ "$(jq -r ".images[$i].status // empty" "$IMAGE_SHOTS")" = "" ]; then
+        python3 ~/.config/opencode/astro-static/phases/gen-lqip.py "$path" >/dev/null 2>&1 || true
         jq ".images[$i].status = \"generated\"" "$IMAGE_SHOTS" > "$IMAGE_SHOTS.tmp" && mv "$IMAGE_SHOTS.tmp" "$IMAGE_SHOTS"
       fi
     done
 
-    jq --argjson images "$(jq '.images' "$IMAGE_SHOTS")" '.content_images = $images' \
+    jq --argjson images "$(jq '[.images[] | {
+          id, type, dimensions, used_in, content_collection, content_entry,
+          status, fallback_reason,
+          path: .output_path
+        }]' "$IMAGE_SHOTS")" '.content_images = $images' \
       "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
     echo "STATUS:ASSET_FALLBACK_IMAGES_OK"
     ;;
