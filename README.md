@@ -1,246 +1,379 @@
-# astro-static
+# astro-static — Multi-Agent Static Site Pipeline for OpenCode
 
-A multi-agent pipeline that produces complete, deployable Astro 5 static websites from a client brief. Runs inside [OpenCode](https://opencode.ai) using specialist subagents orchestrated by a primary pipeline controller.
-
-> **Private repo** — internal tooling for the astro-static site generation workflow.
+> **Production-grade, multi-agent pipeline that researches brands, extracts design DNA from reference sites, generates visual assets via AI, builds Astro 5 + Tailwind v4 static sites, and deploys them to a Debian 13 VPS — all orchestrated by a single OpenCode agent.**
 
 ---
 
-## What It Does
+## Overview
 
-Given a client intake brief (business name, goals, reference sites, page requirements), the pipeline:
+`astro-static` is a complete **agentic site generation system** built on the [OpenCode](https://github.com/opencode-ai/opencode) platform. It uses a team of **8 specialized AI subagents**, coordinated by a deterministic orchestrator, to take a site from a human-written brief to a live, deployed Astro 5 website in a single session.
 
-1. **Bootstraps** a fresh Debian 13 VPS with Gitea, Caddy, Node.js, and Bun
-2. **Extracts design tokens** from reference sites (colors, typography, spacing, motion signals)
-3. **Researches** the client and competitive landscape to produce a creative brief
-4. **Generates visual identity assets** — logo, favicons, OG image, theme CSS, font pairing
-5. **Generates content images** — hero backgrounds, gallery photos, team portraits, section backgrounds
-6. **Generates video backgrounds** (optional) — short cinematic loops via Kling 3.0
-7. **Builds the frontend** — complete Astro 5 project with Tailwind v4, shadcn/ui, Content Collections
-8. **Deploys** via Gitea push → Caddy static serving with auto-TLS
+The pipeline is **phase-gated with human-in-the-loop checkpoints**, **contract-validated at every stage**, and **idempotent at every level** — you can interrupt and resume safely.
 
-The entire flow is resume-safe: if any phase fails or the session restarts, the orchestrator reads the pipeline state file and picks up where it left off.
+### What It Does
+
+1. **Bootstraps a fresh Debian 13 VPS** with Node.js, Bun, Gitea (git server), Caddy (reverse proxy + auto-TLS), and a git-sync watcher for continuous deployment from content changes.
+2. **Extracts design tokens** from reference/competitor websites — W3C DTCG JSON, Tailwind v4 `@theme` blocks, CSS/SVG section patterns, and motion signals — using both CSS parsing and computer vision (via kimi-k2.6 multimodal model).
+3. **Researches the client business** — brand strategy, competitive landscape, industry trends — and produces a structured creative brief with verified facts, content model definitions, and explicit review flags when source data contradicts the human-provided brief.
+4. **Generates visual identity assets** — color palettes (oklch), Google Font pairings, logos, favicon sets, OG images, Tailwind v4 theme CSS — via PPQ.AI `nano-banana-pro` image generation.
+5. **Generates content images and optional video backgrounds** — hero images, gallery photos, member portraits, atmospheric looping video backgrounds (via PPQ.AI `kling-3.0`) — with LQIP (Low-Quality Image Placeholder) generation for perceived performance.
+6. **Builds a complete Astro 5 site** with Tailwind v4 CSS-first theming, Astro Content Collections, shadcn/ui interactive islands, and optional motion engines (GSAP ScrollTrigger, Motion One, Lottie, Three.js).
+7. **Deploys to the VPS** — rsyncs, builds via Bun, smoke-tests, pushes to Gitea, and verifies the live site.
 
 ---
 
-## Repository Structure
+## Architecture
 
 ```
-astro-static/
-├── agents/astro-static/          # OpenCode agent configurations
-│   ├── orchestrator.md           # Primary agent — coordinates the full pipeline
-│   ├── researcher.md             # Brand research + creative brief production
-│   ├── design-extractor.md       # Extracts design tokens from reference URLs
-│   ├── asset-generator.md        # Generates visual identity + content images
-│   ├── frontend-builder.md       # Writes Astro 5 code, syncs to VPS, builds
-│   ├── img-gen.md                # Image generation via PPQ.AI (nano-banana-pro)
-│   ├── vid-gen.md                # Video generation via PPQ.AI (kling-3.0)
-│   ├── auditor.md                # Read-only pipeline health checker
-│   ├── schemas/                  # JSON Schemas for pipeline artifacts
-│   │   ├── 00-brief.schema.json
-│   │   ├── 00-design-tokens.schema.json
-│   │   ├── 00-pipeline-state.schema.json
-│   │   ├── 01-creative-brief.schema.json
-│   │   ├── 02-asset-manifest.schema.json
-│   │   ├── 02-font-config.schema.json
-│   │   ├── 02-image-shot-list.schema.json
-│   │   ├── 02-video-shot-list.schema.json
-│   │   ├── bootstrap-result.schema.json
-│   │   └── vps-connection.schema.json
-│   └── references/               # Shared design/tech reference docs
-│       ├── reference-stack.md    # Astro 5 + Tailwind v4 API reference
-│       ├── impeccable-ui.md      # UI design rules (spacing, motion, interaction)
-│       └── impeccable-tokens.md  # Font/color selection methodology
-│
-└── scripts/                      # Deterministic shell/Python scripts
-    ├── setup-vps.sh              # Idempotent VPS bootstrap (Debian 13)
-    ├── validate-pipeline.py      # Multi-phase artifact validation
-    ├── bg-bootstrap.sh           # Background VPS bootstrap launcher
-    └── phases/
-        ├── retry.sh              # Retry-dedupe helpers
-        ├── bootstrap-join.sh     # Blocking wait for background bootstrap
-        ├── smoke.sh              # Post-build functional checks on dist/
-        ├── push-gitea.sh         # Commit + push to Gitea with stall detection
-        ├── asset-fallbacks.sh    # Deterministic SVG placeholder fallbacks
-        └── gen-lqip.py           # Generates base64 WebP LQIP placeholders
+┌─────────────────────────────────────────────────────┐
+│                 CONTROL NODE (your machine)          │
+│                                                     │
+│  ┌──────────────┐    dispatches subagents           │
+│  │ Orchestrator │────────────────────┐              │
+│  │ (glm-5.1)    │                    │              │
+│  └──────┬───────┘                    │              │
+│         │                            ▼              │
+│         │ Phases:          ┌──────────────────┐     │
+│         │  0. Bootstrap ──▶│  Subagent Team   │     │
+│         │  1. Design Extr  │                  │     │
+│         │  2. Research ───▶│ researcher       │     │
+│         │  2.5 Validation  │ design-extractor │     │
+│         │  3. Assets ─────▶│ asset-generator  │     │
+│         │  3.5 Images ────▶│   img-gen        │     │
+│         │  3.6 Videos ────▶│   vid-gen        │     │
+│         │  4. Build ──────▶│ frontend-builder │     │
+│         │  5. Deploy        │ auditor          │     │
+│         │                   └──────────────────┘     │
+│         │                                            │
+│  Local: /Users/<you>/SITES/<project>/                │
+│         └── pipeline/  (checkpoint artifacts)        │
+│                                                     │
+└──────────────────┬──────────────────────────────────┘
+                   │ SSH
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│              TARGET VPS (Debian 13)                  │
+│                                                     │
+│  ┌─────────┐  ┌─────────┐  ┌───────────────────┐   │
+│  │  Gitea  │  │  Caddy  │  │ /var/www/sites/    │   │
+│  │ git     │  │ HTTPS   │  │   <project>/       │   │
+│  │ server  │  │ +TLS    │  │   ├── src/         │   │
+│  └─────────┘  └─────────┘  │   ├── dist/        │   │
+│                             │   └── pipeline/    │   │
+│  git-sync watcher           └───────────────────┘   │
+│  (auto-rebuild on push)                              │
+└─────────────────────────────────────────────────────┘
 ```
+
+### Key Design Decisions
+
+- **Control node / VPS separation**: All AI work (research, asset generation, code writing) happens locally on the control node. Only the build/runtime artifacts are synced to the VPS via rsync over SSH.
+- **Non-blocking bootstrap**: VPS setup runs in the background concurrently with Phases 1–3.6, joining only before Phase 4 (Build). This parallelizes ~3–5 minutes of server setup with pure-local work.
+- **Phase gate with human-in-the-loop**: Phase 2.5 (Brief Validation) explicitly checks for unverifiable proper nouns, contradictory requirements, and ambiguous references. The pipeline halts until a human resolves flagged issues — preventing wasted downstream asset generation.
+- **Contract-driven architecture**: Every phase produces and validates JSON artifacts against JSON schemas. `validate-pipeline.py` runs at startup and phase transitions to catch drift, missing files, and schema violations early.
 
 ---
 
-## Agent Roles
+## Agent Team
 
-### orchestrator (primary)
+| Agent | Model | Role | Mode |
+|-------|-------|------|------|
+| **orchestrator** | `zai-coding-plan/glm-5.1` | Master coordinator — dispatches subagents, runs phase scripts, validates artifacts, updates state | `primary` |
+| **researcher** | `deepseek/deepseek-v4-pro` | Brand strategist — deep research, competitive analysis, creative brief authoring | `subagent` |
+| **design-extractor** | `ppq/moonshotai/kimi-k2.6` | Design token extractor — CSS + vision-based extraction from reference sites, outputs W3C DTCG JSON + Tailwind theme | `subagent` |
+| **asset-generator** | `deepseek/deepseek-v4-pro` | Visual identity producer — color palettes (oklch), font pairings, logos, favicons, theme CSS, content images, video backgrounds | `subagent` |
+| **frontend-builder** | `deepseek/deepseek-v4-pro` | Astro 5 developer — writes all page/component code, Content Collections, responsive layouts, optional GSAP/motion engines, syncs and builds on VPS | `subagent` |
+| **img-gen** | `deepseek/deepseek-v4-flash` | Image API worker — calls PPQ.AI `nano-banana-pro`, downloads and validates images | `subagent` |
+| **vid-gen** | `deepseek/deepseek-v4-flash` | Video API worker — submits to PPQ.AI `kling-3.0`, polls async, downloads and validates MP4 videos | `subagent` |
+| **auditor** | `deepseek/deepseek-v4-pro` | Read-only quality inspector — audits pipeline state, artifact contracts, permissions, and recommends next action | `subagent` |
 
-The pipeline controller. Dispatches specialist subagents phase-by-phase, manages pipeline state (`pipeline/00-pipeline-state.json`), writes `STATUS.md`, halts for human review on ambiguous briefs, and handles retry logic with deduplication.
+### Permission Model
 
-**Model:** `zai-coding-plan/glm-5.1` — high-reasoning for orchestration decisions.
-**Steps:** 200 — the full pipeline is long-running.
-
-### researcher (subagent)
-
-Deep research into the client's business, competitors, and industry. Produces `pipeline/01-creative-brief.json` with brand personality, color/typography direction, content structure, and a formal content model. Verifies all proper nouns against authoritative sources and flags unverified claims for human review.
-
-**Model:** `deepseek/deepseek-v4-pro`
-**Tools:** web search, web fetch, search agents (deepeye, proxy, scrapling, crawlee, instagram)
-
-### design-extractor (subagent)
-
-Fetches reference websites, extracts design tokens (colors, typography, spacing, shadows, motion signals) using both CSS parsing and visual screenshot analysis. Outputs W3C DTCG tokens, Tailwind v4 theme CSS, section pattern YAMLs, and an extraction report with confidence scores.
-
-**Model:** `ppq/moonshotai/kimi-k2.6` — multimodal for visual analysis.
-**Tools:** search agents, web fetch
-
-### asset-generator (subagent)
-
-Produces the visual identity: color palette, font pairing, theme CSS, logo (via img-gen), favicons, OG image. Also handles content-image generation (Phase 3.5) and video-background generation (Phase 3.6) by delegating to img-gen and vid-gen respectively.
-
-**Model:** `deepseek/deepseek-v4-pro`
-**Tools:** img-gen, vid-gen subagents, bash for Pillow-based processing
-
-### frontend-builder (subagent)
-
-Writes the complete Astro 5 project: pages, components, layouts, Content Collections, theme integration, LQIP image rendering, video background components, optional GSAP/ScrollTrigger sections. Syncs to VPS via rsync, runs `bun install && bun run check && bun run build` remotely.
-
-**Model:** `deepseek/deepseek-v4-pro`
-**Tools:** edit, bash (rsync, ssh), glob, grep, Astro docs MCP
-
-### img-gen (subagent, hidden)
-
-Calls PPQ.AI `nano-banana-pro` for image generation. Handles API calls, download, size verification, and retry logic. Always uses the same model — no model switching.
-
-**Model:** `deepseek/deepseek-v4-flash`
-**API:** `POST https://api.ppq.ai/v1/images/generations`
-
-### vid-gen (subagent, hidden)
-
-Calls PPQ.AI `kling-3.0` for video generation. Handles async submit → poll → download cycle. 5s MP4 clips at 16:9 by default (~$1.29 per clip).
-
-**Model:** `deepseek/deepseek-v4-flash`
-**API:** `POST https://api.ppq.ai/v1/videos`
-
-### auditor (subagent, read-only)
-
-Inspects pipeline state and artifacts without writing anything. Reports missing/malformed files, contract drift, human-review blockers, and recommends the next safe action. Called by the orchestrator before retrying after unclear failures.
-
-**Model:** `deepseek/deepseek-v4-pro`
-**Permissions:** read-only — no edit, no bash (except read-only git/jq/validate commands), no subagents.
+All agents use **least-privilege permissions**. Key constraints:
+- **orchestrator**: Can SSH/rsync/scp (with `ask` gates), runs phase scripts, dispatches subagents. Denies `rm -rf *`.
+- **researcher/design-extractor**: Cannot touch VPS (`ssh: deny`, `scp: deny`, `rsync: deny`). Web research only.
+- **asset-generator**: Local-only file creation. Delegates all API calls to `img-gen` and `vid-gen` — never calls PPQ directly.
+- **frontend-builder**: Writes code locally, rsyncs on `ask`, builds on VPS via `bun`.
+- **img-gen/vid-gen**: Minimal — only `curl` for PPQ API, `mkdir`, file validation.
+- **auditor**: Strictly read-only. `edit: deny`, `task: deny`, `skill: deny`. No write-side effects.
 
 ---
 
 ## Pipeline Phases
 
-| Phase | Name | Agent | VPS? | Output |
-|-------|------|-------|------|--------|
-| 0 | VPS Bootstrap | orchestrator + `setup-vps.sh` | Yes | Gitea, Caddy, Node, Bun on VPS |
-| 1 | Design Extraction | design-extractor | No | `pipeline/00-design-tokens/` |
-| 2 | Research | researcher | No | `pipeline/01-creative-brief.json` |
-| 2.5 | Brief Validation | orchestrator | No | Human review gate (halts if issues) |
-| 3 | Asset Generation | asset-generator | No | Theme CSS, logo, favicons, OG image, font config |
-| 3.5 | Content Images | asset-generator → img-gen | No | Hero backgrounds, gallery, portraits, LQIPs |
-| 3.6 | Video Backgrounds | asset-generator → vid-gen | No | MP4 clips for hero/section backgrounds |
-| — | Bootstrap Join | orchestrator + `bootstrap-join.sh` | Yes | Validates VPS, merges connection details |
-| 4 | Frontend Build | frontend-builder | Yes | Complete Astro project, built on VPS |
-| 5 | Deploy | orchestrator + `push-gitea.sh` | Yes | Live site via Caddy |
+### Phase 0: VPS Bootstrap (Background, Non-Blocking)
+- Probes VPS state for existing setup
+- Launches `setup-vps.sh` in background (3–5 min for fresh VPS)
+- Phases 1–3.6 proceed in parallel
+- Bootstrap Join (blocking) merges VPS config before Phase 4
 
-Phases 0 and 1–3.6 run concurrently — VPS bootstrap happens in the background while local-only phases (design extraction, research, asset generation) proceed. The Bootstrap Join blocks before Phase 4 when the VPS is actually needed.
+### Phase 1: Design Extraction (Conditional)
+- Only runs if `00-brief.json` contains reference/competitor URLs
+- Dispatches `design-extractor` for CSS + vision extraction
+- Outputs: `pipeline/00-design-tokens/` (tokens.json, Tailwind theme.css, section patterns, motion signals)
+
+### Phase 2: Research
+- Dispatches `researcher` with search agents (deepeye, worker, proxy, scrapling, crawlee, instagram)
+- Produces `pipeline/01-creative-brief.json` (~150-300 lines JSON)
+- Includes `content_model`, `color_direction`, `typography_direction`, `motion_direction`
+- Verification gate: flags unverified proper nouns, contradictory requirements
+
+### Phase 2.5: Brief Validation Gate (Human-in-the-Loop)
+- Scans `review_flags` for blocking issues
+- Cross-checks brief against original `00-brief.json`
+- If issues found → writes `HUMAN_REVIEW.md`, sets `needs_human_review: true`, HALTS
+- Pipeline cannot proceed until a human resolves flagged items
+
+### Phase 3: Asset Generation
+- Dispatches `asset-generator` for identity assets
+- Outputs: `02-font-config.json`, `02-asset-manifest.json`, `src/styles/theme.css`, logos, favicons, OG image
+- WCAG AA contrast validation (≥4.5:1 for text)
+
+### Phase 3.5: Content Image Generation
+- Derives image shot list from creative brief's `content_structure`
+- Generates hero backgrounds, gallery images, member portraits, section backgrounds
+- Produces LQIP (24px base64 WebP) for every image
+- Writes typed import index (`src/lib/content-images.ts`) for build-time safety
+
+### Phase 3.6: Video Background Generation (Optional)
+- Conditional on `motion_direction.video_backgrounds: true`
+- Generates 5s MP4 loops via `kling-3.0` (~$1.29 each)
+- Poster images paired from Phase 3.5 content images
+- Reduced-motion fallback via CSS
+
+### Phase 4: Frontend Build
+- Syncs all local assets to VPS
+- Dispatches `frontend-builder` with comprehensive design reasoning framework
+- Builds all pages, Content Collections, components
+- Runs `astro check` + `astro build` via Bun
+- Smoke tests (6 checks: stylesheets, theme tokens, nav links, template rendering, titles)
+- Supports optional motion engines: GSAP/ScrollTrigger, Motion One, Lottie, Three.js
+
+### Phase 5: Deploy
+- Commits locally, pushes to Gitea on VPS
+- Verifies live site via HTTP 200
+- Writes `RESULT.md` with all URLs, design summary, cost estimates
+
+---
+
+## Tech Stack (Non-Negotiable)
+
+| Layer | Technology |
+|-------|-----------|
+| **Site framework** | Astro 5 |
+| **CSS framework** | Tailwind v4 (CSS-first, `@theme {}` block, no `tailwind.config.js`) |
+| **Component library** | shadcn/ui (React islands) |
+| **Content** | Astro Content Collections with Zod schemas, file-backed MDX |
+| **Images** | Sharp for WebP/AVIF at build, Pillow for pre-processing, pngquant/jpegoptim |
+| **LQIP** | 24px base64 WebP CSS backgrounds, ~300-500 bytes per image |
+| **Build tool** | Bun (3-5× faster than npm) |
+| **Version control** | Gitea on VPS (self-hosted git) |
+| **Reverse proxy** | Caddy (auto-TLS, multi-domain) |
+| **Deployment** | git-sync watcher (auto-rebuild on push) |
+| **Image generation** | PPQ.AI `nano-banana-pro` (4K raster PNG) |
+| **Video generation** | PPQ.AI `kling-3.0` (async, 5s MP4) |
+| **Serving** | Static files via Caddy, Gitea for git hosting |
+| **VPS OS** | Debian 13 (Trixie) |
+
+---
+
+## File Structure
+
+```
+astro-static/
+├── README.md                          # This file
+├── agents/astro-static/               # OpenCode agent definitions
+│   ├── orchestrator.md                # Master pipeline coordinator
+│   ├── researcher.md                  # Brand research & creative brief
+│   ├── design-extractor.md            # CSS + vision design extraction
+│   ├── asset-generator.md             # Visual identity + content assets
+│   ├── frontend-builder.md            # Astro 5 site builder
+│   ├── img-gen.md                     # PPQ image API worker
+│   ├── vid-gen.md                     # PPQ video API worker
+│   ├── auditor.md                     # Read-only quality auditor
+│   ├── references/                    # Shared knowledge files
+│   │   ├── reference-stack.md         # Canonical Tailwind v4 + Astro 5 syntax
+│   │   ├── impeccable-tokens.md       # Font selection, oklch palette rules
+│   │   └── impeccable-ui.md           # Spatial design, motion, interaction
+│   └── schemas/                       # JSON schema files
+│       ├── 00-brief.schema.json
+│       ├── 01-creative-brief.schema.json
+│       ├── 02-asset-manifest.schema.json
+│       └── ... (10 schemas total)
+├── scripts/                           # Standalone utilities
+│   ├── validate-pipeline.py           # Multi-phase pipeline validator
+│   ├── setup-vps.sh                   # Idempotent Debian 13 bootstrap
+│   ├── bg-bootstrap.sh                # Background bootstrap launcher
+│   ├── test_regressions.py            # Regression tests
+│   └── phases/                        # Deterministic helpers
+│       ├── bootstrap-join.sh
+│       ├── push-gitea.sh
+│       ├── smoke.sh
+│       ├── asset-fallbacks.sh
+│       ├── gen-lqip.py
+│       └── retry.sh
+└── commands/                          # OpenCode custom slash commands
+    ├── new-site.md
+    ├── edit-site.md
+    └── add-domain.md
+```
+
+---
+
+## Installation
+
+### Prerequisites
+
+- **OpenCode** installed and configured
+- A **Debian 13 VPS** (fresh or existing) reachable via SSH with key authentication
+- **PPQ.AI API key** set as `PPQ_API_KEY` environment variable
+- **Python 3.12+** with `jsonschema` and `Pillow` libraries
+- **jq** for JSON processing in bash scripts
+
+### Agent Installation
+
+```bash
+# Global agents (available in all projects)
+cp agents/astro-static/*.md ~/.config/opencode/agents/astro-static/
+cp agents/astro-static/references/*.md ~/.config/opencode/agents/astro-static/references/
+cp agents/astro-static/schemas/*.json ~/.config/opencode/agents/astro-static/schemas/
+
+# Scripts
+cp scripts/*.sh scripts/*.py ~/.config/opencode/astro-static/
+cp scripts/phases/* ~/.config/opencode/astro-static/phases/
+chmod +x ~/.config/opencode/astro-static/phases/*.sh
+chmod +x ~/.config/opencode/astro-static/*.sh
+
+# Commands
+cp commands/*.md ~/.config/opencode/commands/astro-static/
+```
+
+### Python Dependencies
+
+```bash
+pip install jsonschema Pillow
+# Optional: for SVG logo conversion
+pip install cairosvg
+# or: apt install librsvg2-bin
+```
+
+---
+
+## Usage
+
+### Starting a New Site
+
+```
+/new-site I need a website for a boutique coffee roaster in Portland.
+They want a moody, atmospheric brand.
+```
+
+The orchestrator asks for missing details group by group: VPS connection, project identity, brief seed, reference URLs.
+
+### Editing an Existing Site
+
+```
+/edit-site Change the hero section to be full-screen video instead of static image.
+```
+
+### Attaching a Domain
+
+```
+/add-domain Set the domain to example.com for my coffee site.
+```
+
+### Resuming a Halted Pipeline
+
+Re-run the orchestrator — it reads `pipeline/00-pipeline-state.json` and resumes from the first incomplete phase.
+
+### Audit Mode (Read-Only)
+
+```
+@astro-static/auditor Check the pipeline state for my-coffee-site.
+```
 
 ---
 
 ## Pipeline Artifacts
 
-All artifacts live in the project's `pipeline/` directory:
+| Artifact | Phase | Producer | Consumer |
+|----------|-------|----------|----------|
+| `00-brief.json` | Startup | Human + orchestrator | researcher, asset-generator, frontend-builder |
+| `vps-connection.json` | Startup | Human + orchestrator | all phases, frontend-builder, deploy |
+| `00-pipeline-state.json` | All | orchestrator | orchestrator (resume), auditor |
+| `00-design-tokens/` | 1 | design-extractor | researcher, asset-generator |
+| `01-creative-brief.json` | 2 | researcher | asset-generator, frontend-builder |
+| `02-font-config.json` | 3 | asset-generator | frontend-builder |
+| `02-asset-manifest.json` | 3 | asset-generator | frontend-builder, auditor |
+| `02-image-shot-list.json` | 3.5 | orchestrator + asset-generator | asset-generator |
+| `02-video-shot-list.json` | 3.6 | orchestrator + asset-generator | asset-generator |
+| `STATUS.md` | All | orchestrator | human |
+| `HUMAN_REVIEW.md` | 2.5, on failure | orchestrator | human |
+| `RESULT.md` | 5 | orchestrator | human |
+
+---
+
+## STATUS Token Grammar
+
+Every failure emits a machine-parseable line:
 
 ```
-pipeline/
-├── 00-brief.json                 # Intake brief (user-provided)
-├── 00-pipeline-state.json        # Phase status tracking
-├── 00-design-tokens/             # Extracted reference-site tokens
-│   ├── tokens.json               # W3C DTCG format
-│   ├── tailwind/theme.css        # @theme {} block
-│   └── patterns/                 # Section + motion YAMLs
-├── 01-creative-brief.json        # Strategy + content model
-├── 02-font-config.json           # Heading + body font config
-├── 02-asset-manifest.json        # All generated assets + content images + videos
-├── 02-image-shot-list.json       # Content image generation tasks
-├── 02-video-shot-list.json       # Video background generation tasks
-├── vps-connection.json           # SSH + deploy credentials (sensitive)
-├── HUMAN_REVIEW.md               # Generated when pipeline halts for review
-├── STATUS.md                     # Human-readable pipeline status
-├── RESULT.md                     # Final deployment summary
-├── bootstrap.pid                 # Background bootstrap process tracking
-├── bootstrap.log                 # Bootstrap output log
-└── retry.log                     # Retry-deduplication log
+STATUS:<TOKEN>[ <key>=<value> ...][ <free-form detail>]
 ```
 
-Every artifact has a corresponding JSON Schema in `agents/astro-static/schemas/`. The `validate-pipeline.py` script checks artifacts at each phase gate.
+Key tokens: `CONNECT_OK`, `BOOTSTRAP_OK`, `BRIEF_VALIDATION_FAILED`, `CONTENT_IMAGES_OK`, `BUILD_OK`, `SITE_LIVE`, `PUSH_OK`, and many more (see orchestrator.md §STATUS token grammar for the full table).
 
 ---
 
-## Tech Stack
+## Motion Engine Support
 
-| Component | Technology |
-|-----------|-----------|
-| Frontend framework | Astro 5 (static output) |
-| CSS framework | Tailwind v4 (CSS-first `@theme {}`) |
-| UI components | shadcn/ui (React islands with `client:*` directives) |
-| Content | Astro Content Collections (file-backed, Zod schemas) |
-| Image optimization | Sharp (WebP/AVIF at build), Astro `<Image>` component |
-| LQIP | Base64 WebP placeholders (24px blurred previews) |
-| Video backgrounds | Native `<video autoplay muted loop playsinline>` — no player libraries |
-| Optional motion | CSS/SVG (default), Motion One, GSAP + ScrollTrigger (explicit opt-in), Lottie, Three.js |
-| VPS | Debian 13, Gitea (git hosting), Caddy (static serving + auto TLS) |
-| Runtime | Bun (install, check, build) |
-| Image generation | PPQ.AI `nano-banana-pro` |
-| Video generation | PPQ.AI `kling-3.0` |
-| Design token format | W3C DTCG JSON + oklch() colors |
+| Engine | Use Case | Dependency |
+|--------|----------|-----------|
+| **CSS/SVG** | Default — gradients, inline SVG, pseudo-elements | Built-in |
+| **Astro View Transitions** | Page-level route transitions | Built-in |
+| **Motion One** | Lightweight Web Animations API effects | `motion` |
+| **GSAP + ScrollTrigger** | Pinned scroll, scrubbed timelines, horizontal scroll | `gsap` |
+| **Lottie** | After Effects animation assets | `lottie-web` |
+| **Three.js** | Premium immersive 3D backgrounds | `three` |
+| **Lenis** | Smooth scrolling | `@studio-freight/lenis` |
+
+All engines are **dependency-gated**, **reduced-motion guarded**, and **mobile-safe**.
 
 ---
 
-## Key Design Decisions
+## Design Quality Guarantees
 
-### Status token grammar
-
-Every failure path emits `STATUS:<UPPER_SNAKE_CASE> [key=value ...]` — a machine-parseable format that downstream tooling keys on. Tokens are enumerated in the orchestrator agent and never renamed.
-
-### Retry deduplication
-
-`phases/retry.sh` tracks error signatures (phase + SHA256 of status line) and halts after seeing the same error twice — prevents a stuck subagent from burning through the retry budget.
-
-### Human-in-the-loop at Phase 2.5
-
-Before any expensive asset generation, the orchestrator cross-checks the creative brief against the original intake. If the researcher flagged unverified names, contradictory requirements, or ambiguous references, the pipeline halts and writes `HUMAN_REVIEW.md` with specific issues and options.
-
-### Deterministic fallbacks
-
-If image or video generation fails, `phases/asset-fallbacks.sh` writes valid SVG placeholder assets and marks them in the manifest — never 0-byte files, never broken builds.
-
-### Website-agnostic
-
-The orchestrator never infers business type, owner, site purpose, or reference domain from prior runs. Each pipeline starts fresh from the current brief.
+- **WCAG AA contrast** (≥4.5:1 text/background, ≥3:1 muted/background)
+- **No generic font defaults** (Inter, Roboto, Montserrat are banned)
+- **oklch() color format** — perceptually uniform, accessible
+- **4pt spacing system** — all layout uses 4pt multiples
+- **Squint test** — visual hierarchy clear even when blurred
+- **8 interactive states** — default, hover, focus, active, disabled, loading, error, success
+- **≥44px touch targets** — mobile accessibility
+- **prefers-reduced-motion** — every animation has a fallback
+- **Semantic HTML** — `<header>`, `<main>`, `<nav>`, `<section>`, `<article>`
 
 ---
 
-## Requirements
+## Security
 
-- **OpenCode** with the astro-static agents installed under `~/.config/opencode/agents/astro-static/`
-- **PPQ.AI API key** (`PPQ_API_KEY` env var) for image/video generation
-- **VPS** running Debian 13 (Trixie) with SSH access
-- **Python 3.10+** with Pillow for local image processing
-- **Bun** on the VPS (installed by `setup-vps.sh`)
+- **Secrets**: `vps-connection.json` contains credentials. Never commit to public repos.
+- **SSH**: Key-based auth only. Gitea passwords are auto-generated per-project.
+- **Permissions**: All agents use least-privilege. Auditor is read-only.
+- **API keys**: `PPQ_API_KEY` from environment only, never in artifacts.
+- **No external services**: Gitea + Caddy self-hosted on VPS.
+- **Git safety**: Force-push disabled. `pull --rebase` before push.
 
 ---
 
-## Quick Start
+## Cost Estimates
 
-1. Install the agent configs: copy `agents/astro-static/` to `~/.config/opencode/agents/astro-static/`
-2. Install the scripts: copy `scripts/` to `~/.config/opencode/astro-static/`
-3. Set `PPQ_API_KEY` in your environment
-4. Create a project directory under `/Users/djesys/SITES/<project-name>/`
-5. Write `pipeline/00-brief.json` with your intake brief
-6. Run OpenCode and select the `astro-static/orchestrator` agent
-7. Provide the VPS connection details when prompted
-
-The orchestrator handles everything from there — bootstrap through deploy.
+| Component | Cost |
+|-----------|------|
+| VPS (Debian 13, 1 vCPU, 1 GB RAM) | ~$5-7/month |
+| PPQ.AI images (nano-banana-pro) | ~$0.01-0.05 each |
+| PPQ.AI video (kling-3.0, 5s) | ~$1.29 each |
+| Domain (optional) | ~$10-15/year |
 
 ---
 
