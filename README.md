@@ -1,12 +1,12 @@
 # astro-static — Multi-Agent Static Site Pipeline for OpenCode
 
-> **Production-grade, multi-agent pipeline that researches brands, extracts design DNA from reference sites, generates visual assets via AI, builds Astro 5 + Tailwind v4 static sites, and deploys them to a Debian 13 VPS — all orchestrated by a single OpenCode agent.**
+> **Multi-agent pipeline for OpenCode that researches brands, extracts design DNA from reference sites, generates visual assets via AI, builds Astro 5 + Tailwind v4 static sites, and deploys them to a Debian 13 VPS — all orchestrated by a single agent.**
 
 ---
 
 ## Overview
 
-`astro-static` is a complete **agentic site generation system** built on the [OpenCode](https://github.com/opencode-ai/opencode) platform. It uses a team of **8 specialized AI subagents**, coordinated by a deterministic orchestrator, to take a site from a human-written brief to a live, deployed Astro 5 website in a single session.
+`astro-static` is an **agentic site generation pipeline** built on the [OpenCode](https://github.com/opencode-ai/opencode) platform. It defines **8 specialized AI subagents**, coordinated by a deterministic orchestrator, that together take a site from a human-written brief to a live, deployed Astro 5 website. The system has been used to generate multiple sites but has not been systematically benchmarked or hardened for arbitrary input.
 
 The pipeline is **phase-gated with human-in-the-loop checkpoints**, **contract-validated at every stage**, and **idempotent at every level** — you can interrupt and resume safely.
 
