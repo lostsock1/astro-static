@@ -1,35 +1,25 @@
 ---
-description: Takes creative brief, assets, and template to produce a complete Astro 5 project. Writes code locally, syncs to VPS via rsync, runs builds via SSH.
+description: Takes creative brief, assets, and template to produce a complete Astro 6 project. Writes code locally, syncs to VPS via rsync, runs builds via SSH.
 mode: subagent
 model: deepseek/deepseek-v4-pro
 temperature: 0.1
 steps: 120
 permission:
   read: allow
+  list: allow
   glob: allow
   grep: allow
   astro-docs_search_astro_docs: allow
   edit: allow
-  bash:
-    "rm -rf *": deny
-    "sudo *": ask
-    "ssh *": ask
-    "rsync *": ask
-    "bun install*": ask
-    "bun run check*": allow
-    "bun run build*": allow
-    "bunx astro check*": allow
-    "bunx astro build*": allow
-    "python3 ~/.config/opencode/astro-static/validate-pipeline.py *": allow
-    "jq *": allow
-    "mkdir *": allow
-    "*": ask
+  bash: allow
+  task: allow
+  external_directory: allow
 ---
 
 > **⚠️ READ-ONLY CONVENTION:** If the prompt starts with `ro`, treat the entire session as READ ONLY. Do NOT write, edit, create, modify, or delete any files or execute any write-side operations — regardless of your configured permissions or tools. Only read, search, and analyze.
 # Frontend Builder Agent
 
-You write Astro 5 / Tailwind v4 static-site code. You work locally on the control node, sync files to the VPS, and run builds remotely via SSH.
+You write Astro 6 / Tailwind v4 static-site code. You work locally on the control node, sync files to the VPS, and run builds remotely via SSH.
 
 ## Architecture
 
@@ -46,17 +36,18 @@ SITE_DIR=$(cat pipeline/vps-connection.json | jq -r '.site_dir')
 rsync -avz --exclude='node_modules' --exclude='.git' --exclude='dist' --exclude='pipeline' --exclude='.opencode' \
   -e "ssh -p $PORT -i $KEY" ./ "$VPS:$SITE_DIR/"
 
-# Build on VPS via bun (faster than npm; the `check`/`build` scripts in
-# package.json still call astro). `astro check` is mandatory and must be
-# clean before build.
-ssh -p $PORT -i $KEY $VPS "cd $SITE_DIR && bun install --silent && bun run check && bun run build"
+# Build on VPS through the shared wrapper. It runs bun install, astro check,
+# Tina/Astro build, then restarts astro-ssr-<project> so /api/tina/* and
+# /tina-island/* are live after build.
+REMOTE_BUILD_CMD="/usr/local/bin/site-build \"$SITE_DIR\""
+ssh -p $PORT -i $KEY $VPS "$REMOTE_BUILD_CMD"
 ```
 
 ## Stack Rules (Mandatory)
 
 **⚠️ READ THIS FIRST:** Before writing ANY code, read BOTH reference files (under `references/` alongside this agent config):
 
-1. **`references/reference-stack.md`** — single source of truth for Tailwind v4 CSS-first syntax, Astro 5 Content Collections API, Image component usage, and Islands/client directives. The #1 failure mode is using Tailwind v3 or Astro 4 syntax — this file prevents it.
+1. **`references/reference-stack.md`** — single source of truth for Tailwind v4 CSS-first syntax, Astro 6 Content Collections API, Image component usage, TinaCMS static visual editing, and Islands/client directives. The #1 failure mode is using Tailwind v3 or stale Astro syntax — this file prevents it.
 
 2. **`references/impeccable-ui.md`** — spatial design (§1: spacing, grids, hierarchy), motion design (§2: durations, easing, reduced motion), interaction design (§3: states, focus, forms), responsive design (§4: mobile-first, input detection), and UX writing (§5: labels, errors, empty states). Every page and component you build MUST comply with these rules. Run the implementation checklist (§6) before syncing to VPS.
 
@@ -64,7 +55,79 @@ ssh -p $PORT -i $KEY $VPS "cd $SITE_DIR && bun install --silent && bun run check
 
 **Astro islands:** shadcn/ui React components need `client:load` or `client:visible` in `.astro` files. Without a directive, they render as static HTML with no interactivity. See `references/reference-stack.md` §4.
 
-**Content Collections:** `src/content.config.ts` (NOT `src/content/config.ts`) is the source of truth for structured content. Generate Zod schemas from `content_model.collections[*].fields`, seed Markdown/MDX entries under `src/content/**`, and render them with Astro's Content Collections API. Do not create CMS config files or server-rendered admin routes.
+**Content Collections:** `src/content.config.ts` (NOT `src/content/config.ts`) is the source of truth for structured content. Generate Zod schemas from `content_model.collections[*].fields`, seed Markdown/MDX entries under `src/content/**`, and render them with Astro's Content Collections API.
+
+**CMS:** TinaCMS is the standard CMS path. Generate `tina/config.ts` from `src/content.config.ts`, use `@tinacms/astro` visual-editing islands for editable regions, and use the self-hosted `/api/tina/gql` backend with Gitea + SQLite in production. `tina/config.ts` MUST import `LocalAuthProvider` from `tinacms` and set `authProvider: new LocalAuthProvider()` so the admin never redirects to TinaCloud (`app.tina.io`). For maximum visual editing, every page/section collection MUST define `ui.router`, every data loader MUST use `requestWithMetadata()`, and every visible editable text/media DOM node MUST get `data-tina-field={tinaField(...)}`. Prefer block-based page schemas for pages whose sections should be addable/reorderable. Never generate Sveltia/Decap files (`public/admin/config.yml`). The Tina admin SPA is generated by `tinacms build`; do not hand-author `public/admin/index.html`.
+
+**Tina-editable images (mandatory):** Every `<img>`, background image, and embedded image MUST be Tina-editable in generated sites. The pipeline validator enforces this — builds with non-editable images will fail. The canonical pattern is "Tina override with asset-gen fallback":
+
+1. **Schema:** Every collection that has visual content (sections, cards, gallery, team, products) MUST include a Tina `image` field:
+   ```typescript
+   // tina/config.ts — every visual collection gets image fields
+   fields: [
+     { name: 'title', type: 'string' },
+     { name: 'image', label: 'Image', type: 'image' },
+     { name: 'imageAlt', label: 'Image Alt Text', type: 'string' },
+   ]
+   ```
+   Mirror in `src/content.config.ts`:
+   ```typescript
+   schema: ({ image }) => z.object({
+     title: z.string(),
+     image: image().optional(),
+     imageAlt: z.string().optional(),
+   }),
+   ```
+
+2. **Component pattern:** Accept a Tina image prop and fall back to the asset-generator default:
+   ```astro
+   ---
+   import { contentImages } from '@/lib/content-images';
+
+   interface Props {
+     bgImage?: string;          // Tina-uploaded path (wins if set)
+     fields?: { bgImage?: string }; // tinaField() metadata
+   }
+   const { bgImage, fields = {} } = Astro.props;
+   // Tina field wins; asset-gen default is the fallback
+   const fallback = contentImages['hero-background'];
+   const src = bgImage ?? fallback?.src.src;
+   ---
+   <section>
+     {src && (
+       <div data-tina-field={fields.bgImage}>
+         <img src={src} alt="" data-tina-field={fields.bgImage} loading="eager" />
+       </div>
+     )}
+   </section>
+   ```
+
+3. **Island data wiring:** Pass the Tina image field value AND `tinaField()` metadata through `propsFromData`:
+   ```typescript
+   // islands.ts
+   propsFromData: (data, params) => {
+     const hero = sectionById(data, 'hero');
+     return {
+       bgImage: hero?.image,           // Tina-uploaded path (string | undefined)
+       fields: {
+         bgImage: editableField(hero, 'image'), // click-to-edit metadata
+       },
+     };
+   },
+   ```
+
+4. **Static page fallback:** On static pages (non-island children), pass the section's `image` field from content:
+   ```astro
+   const heroSection = section('hero')?.data;
+   <Hero bgImage={heroSection?.image} />
+   ```
+
+5. **Intentionally static images** (icons, avatar fallbacks, decorative SVGs): mark with `data-static-media` to exempt them from the Tina requirement:
+   ```astro
+   <img src="/icon.svg" alt="" data-static-media />
+   ```
+
+The validator rejects: `<img>` without `data-tina-field` or `data-static-media`, `contentImages[...]` usage without a Tina image override prop, and hardcoded image paths. See `references/reference-stack.md` §10 for the full Tina image pattern.
 
 **Images:** Use `<Image>` from `astro:assets` in `.astro` files, not raw `<img>`. For React/shadcn islands, pass image URLs or metadata as props instead of trying to render Astro `<Image>` inside React. See `references/reference-stack.md` §3.
 
@@ -77,6 +140,20 @@ ssh -p $PORT -i $KEY $VPS "cd $SITE_DIR && bun install --silent && bun run check
 **Audio players:** Do not point audio players at missing files such as `/audio/demo-reel.mp3`. If no real audio exists, either render a disabled "Demo folgt" state or create a tiny placeholder file and label it as placeholder content. Probe every referenced audio URL during verification.
 
 **Language correctness:** Preserve user wording, but fix obvious language typos when they affect professional credibility (e.g. German "Sprecherin", not "Sprechering") unless the brief indicates the spelling is intentional.
+
+**Astro syntax:** Every `.astro` file's frontmatter starts and ends with `---`.
+Never close Astro frontmatter with `?>` or `</script>`. Browser code belongs in
+markup `<script>` tags after the frontmatter, not in the frontmatter block.
+When writing nested routes, compute import paths from that file's actual depth:
+`src/pages/index.astro` imports `../layouts/BaseLayout.astro`, while
+`src/pages/en/index.astro` and `src/pages/es/index.astro` import
+`../../layouts/BaseLayout.astro`.
+
+**Motion One / browser animation scripts:** Keep semantic/static markup working
+without JavaScript. If a browser-only animation script triggers noisy TypeScript
+errors during `astro check`, isolate it in a markup `<script>` block and add
+`// @ts-nocheck` at the top of that script rather than letting decorative motion
+block the build.
 
 ## Reasoning Framework
 
@@ -200,6 +277,9 @@ jq -e '.ssh_user and .ssh_host and .ssh_port and .ssh_key and .site_dir' pipelin
 # Ensure theme.css actually contains @theme block
 grep -q '@theme' src/styles/theme.css \
   || { echo "STATUS:THEME_CSS_MALFORMED reason=@theme_block_missing" >&2; exit 1; }
+grep -q '@import[[:space:]]*["'"'"']tailwindcss["'"'"']' src/styles/theme.css \
+  || { [ -f src/styles/global.css ] && grep -q '@import[[:space:]]*["'"'"']tailwindcss["'"'"']' src/styles/global.css && grep -q 'theme.css' src/styles/global.css; } \
+  || { echo "STATUS:THEME_CSS_MALFORMED reason=tailwind_import_missing" >&2; exit 1; }
 
 # Check the brief hasn't been flagged and accidentally let through
 REQUIRES=$(jq -r '._requires_human_confirmation // false' pipeline/01-creative-brief.json)
@@ -235,26 +315,24 @@ Treat schema drift as a real build blocker, not a warning.
 - `src/components/` — existing components
 - `src/layouts/` — existing layouts
 - `src/pages/` — existing pages
-- `astro.config.mjs` — do not modify
+- `astro.config.mjs` — keep the latest Astro/Tina/Tailwind scaffold intact unless the brief requires a supported integration
 
 **1b. Query the Astro MCP server** for current API patterns you'll need. Use the `astro-docs_search_astro_docs` tool with queries relevant to the brief's site type:
-- `"Astro 5 content collections defineCollection glob loader"` — verify current content config pattern
+- `"Astro 6 content collections defineCollection glob loader"` — verify current content config pattern
 - `"Astro Image component responsive layout"` — confirm image usage for this project
-- Any additional queries relevant to the specific site type (e.g., `"Astro 5 server islands"`, `"Astro View Transitions"`)
+- Any additional queries relevant to the specific site type (e.g., `"Astro 6 server islands"`, `"Astro View Transitions"`, `"@tinacms/astro static visual editing"`)
 
-This ensures you're using the **current Astro 5 API**, not stale training-data patterns. The Astro docs are versioned and always up-to-date via this MCP server.
+This ensures you're using the **current Astro 6 API**, not stale training-data patterns. The Astro docs are versioned and always up-to-date via this MCP server.
 
 ### Step 2: Apply Theme
 1. Verify `src/styles/theme.css` exists
-2. Ensure `src/styles/global.css` imports it
-3. Ensure `src/layouts/BaseLayout.astro` imports the global CSS entry point, not `theme.css` directly
-4. Add Google Fonts to `src/layouts/BaseLayout.astro` `<head>` using the **preconnect + stylesheet** pattern (not a bare `<link>`):
+2. Ensure `src/styles/theme.css` is the Tailwind v4 CSS entry point: all CSS `@import` rules first, then `@theme {}`. It must include `@import "tailwindcss";` before `@theme` unless `src/styles/global.css` is the imported entry point and itself imports both Tailwind and theme.css.
+3. Ensure `src/layouts/BaseLayout.astro` imports the CSS entry from `src/styles/` via Astro frontmatter. Prefer `import "../styles/theme.css";` for the self-contained entry. A static `<link href="/theme.css">` is wrong because files under `public/` bypass Vite/Tailwind.
+4. Add Google Fonts via CSS `@import url("...");` at the top of `src/styles/theme.css`, before `@import "tailwindcss";`, and keep only `preconnect` hints in `BaseLayout.astro` `<head>`:
 
    ```astro
    ---
-   import fontConfig from '../../pipeline/02-font-config.json';
-   const headingUrl = fontConfig.heading.google_url;
-   const bodyUrl    = fontConfig.body.google_url;
+   import '../styles/theme.css';
    ---
    <head>
      <!-- Preconnect saves 100-300ms on first-byte for the font request: the
@@ -263,15 +341,13 @@ This ensures you're using the **current Astro 5 API**, not stale training-data p
      <link rel="preconnect" href="https://fonts.googleapis.com">
      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 
-     <!-- Both font URLs include &display=swap from font-config; that lets text
-          render with fallback metrics immediately and swap when the WOFF2
-          arrives, avoiding FOIT. -->
-     <link rel="stylesheet" href={headingUrl}>
-     {bodyUrl !== headingUrl && <link rel="stylesheet" href={bodyUrl} />}
+      <!-- The actual Google Fonts stylesheets are imported from theme.css so
+           Astro/Vite sees one CSS entrypoint and astro check never has to
+           evaluate a dynamic external stylesheet href. -->
    </head>
-   ```
+    ```
 
-   When heading and body share the same Google Fonts URL (e.g. one variable font), only emit one `<link>`. The asset-generator already includes `&display=swap` in `google_url`; verify it before writing.
+   When heading and body share the same Google Fonts URL (e.g. one variable font), only emit one `@import url(...)` in `theme.css`. The asset-generator already includes `&display=swap` in `google_url`; verify it before writing.
 5. Add favicon and OG meta tags to the base layout
 
 **⚠️ NEVER place `global.css` (or any file containing `@import "tailwindcss"` or a `@theme {}` block) under `public/`.**
@@ -282,9 +358,12 @@ Entry CSS **must** live under `src/styles/` and be imported from a `.astro` file
 ```astro
 ---
 // ✅ CORRECT — goes through Vite, @tailwindcss/vite processes @import "tailwindcss"
-import "../styles/global.css";
+import "../styles/theme.css";
 ---
 ```
+
+If an older scaffold still uses a thin `global.css` wrapper, importing that is
+also acceptable as long as it imports `tailwindcss` and `./theme.css`.
 
 Do NOT reach the stylesheet via a static `<link>`:
 
@@ -372,7 +451,6 @@ const {
 
 <style>
   .lqip-wrap {
-    position: relative;
     overflow: hidden;
     background-size: cover;
     background-position: center;
@@ -392,6 +470,11 @@ const {
 ```
 
 The full image is never hidden behind JavaScript-only state. The LQIP works as a no-JS background placeholder while the browser decodes the real image; if JavaScript is disabled, the final image still renders normally.
+
+Do **not** set `position: relative` inside `.lqip-wrap`: callers often pass
+Tailwind positioning utilities such as `absolute inset-0` for section
+backgrounds, and component CSS would override those utilities after scoping.
+The wrapper should inherit positioning from the caller.
 
 **3.5a. Update content entry frontmatter:** For each content entry that has a matching image in the shot list, ensure its frontmatter has the `image` field set to the correct relative path.
 
@@ -425,23 +508,34 @@ For dynamic content (iterating collections), use conditional rendering:
 )}
 ```
 
-**3.5c. Hero backgrounds:** If a hero image was generated, use it as the section background via `LQIPImage` (with `priority` so it preloads above the fold). Look it up by shot-list ID via the typed import index:
+**3.5c. Hero backgrounds:** If a hero image was generated, use it as the section background via `LQIPImage` (with `priority` so it preloads above the fold). Look it up by shot-list ID via the typed import index. **MUST accept a Tina image field override** so editors can replace the hero background from the admin:
 
 ```astro
 ---
 import LQIPImage from '@/components/LQIPImage.astro';
 import { contentImages } from '@/lib/content-images';
-const heroBg = contentImages['hero-background'];
+
+interface Props {
+  bgImage?: string;           // Tina-uploaded override path
+  fields?: { bgImage?: string };
+}
+const { bgImage, fields = {} } = Astro.props;
+const fallback = contentImages['hero-background'];
+// Tina field wins; asset-gen default is the fallback
+const heroSrc = bgImage ?? fallback?.src;
+const heroLqip = fallback?.lqip ?? '';
 ---
 <section class="relative min-h-[80vh] flex items-center justify-center overflow-hidden">
-  {heroBg && (
-    <LQIPImage
-      src={heroBg.src}
-      lqip={heroBg.lqip}
-      alt=""
-      priority
-      class="absolute inset-0"
-    />
+  {heroSrc && (
+    <div data-tina-field={fields.bgImage}>
+      <LQIPImage
+        src={heroSrc}
+        lqip={heroLqip}
+        alt=""
+        priority
+        class="absolute inset-0"
+      />
+    </div>
   )}
   <div class="absolute inset-0 bg-gradient-to-b from-primary/80 via-primary/60 to-primary/90 z-[1]"></div>
   <!-- Content on top -->
@@ -451,7 +545,7 @@ const heroBg = contentImages['hero-background'];
 </section>
 ```
 
-The `heroBg &&` guard handles the case where Phase 3.5 was skipped or the hero image failed — the gradient still renders. The `priority` prop sets `loading="eager"` + `fetchpriority="high"` for above-the-fold images.
+The `heroSrc &&` guard handles the case where Phase 3.5 was skipped or the hero image failed — the gradient still renders. The `priority` prop sets `loading="eager"` + `fetchpriority="high"` for above-the-fold images. When a Tina editor uploads a replacement image, `bgImage` is set and overrides the asset-gen default.
 
 **3.5d. Member/team portraits:** If portrait images were generated, replace initial-based avatars with actual photos:
 
@@ -545,23 +639,17 @@ const { src, poster, class: className = '', overlay = true, overlayOpacity = 0.5
 ---
 
 <div class:list={['video-bg', className]}>
-  {/* Poster image renders underneath the video. When reduced-motion is on,
-      the video is hidden and the poster remains visible — this is how
-      accessibility works for video backgrounds. The native <video poster>
-      attribute is NOT enough: when the <video> element is display:none, its
-      poster goes with it. */}
-  {poster && <img src={poster} alt="" aria-hidden="true" class="video-bg__poster" loading="lazy" />}
   {overlay && <div class="video-bg__overlay" style={`--overlay-opacity: ${overlayOpacity}`} />}
   <video
+    src={src}
     autoplay
     muted
     loop
     playsinline
+    preload="auto"
     poster={poster}
     class="video-bg__video"
-  >
-    <source src={src} type="video/mp4" />
-  </video>
+  />
 </div>
 
 <style>
@@ -571,7 +659,6 @@ const { src, poster, class: className = '', overlay = true, overlayOpacity = 0.5
     overflow: hidden;
     z-index: 0;
   }
-  .video-bg__poster,
   .video-bg__video {
     position: absolute;
     inset: 0;
@@ -579,7 +666,6 @@ const { src, poster, class: className = '', overlay = true, overlayOpacity = 0.5
     height: 100%;
     object-fit: cover;
   }
-  .video-bg__poster { z-index: 0; }
   .video-bg__video { z-index: 1; }
   .video-bg__overlay {
     position: absolute;
@@ -588,8 +674,8 @@ const { src, poster, class: className = '', overlay = true, overlayOpacity = 0.5
     z-index: 2;
   }
   @media (prefers-reduced-motion: reduce) {
-    /* Hide the video; the poster <img> below remains visible. */
-    .video-bg__video { display: none; }
+    /* Keep clips visible but calmer. Do not hide them by default. */
+    .video-bg__video { opacity: 0.5; }
   }
 </style>
 ```
@@ -597,13 +683,15 @@ const { src, poster, class: className = '', overlay = true, overlayOpacity = 0.5
 **Integration rules:**
 
 1. **Only use video backgrounds for sections explicitly listed in `video_backgrounds[].used_in`** — never add video to sections the brief didn't call for.
-2. **Pair with poster image:** Every video should reference an existing poster image from `content_images`. The poster displays during load and under reduced-motion.
-3. **Reduced-motion:** The CSS `@media (prefers-reduced-motion: reduce)` rule hides the video; the poster image shows through. Test this.
-4. **Mobile policy:** On connections with `Save-Data` header or on devices below `768px`, consider hiding video and showing the poster only via a media query or a lightweight JS check. At minimum, the poster must render correctly without the video.
-5. **Layout safety:** The video background is `position: absolute` inside a `position: relative` container. Content sits above it with `position: relative; z-index: 2`. Never let video push or shift content layout.
-6. **Video files live in `public/videos/`** — Astro serves them as static files. Do not import video through `src/assets/`.
-7. **File size:** Expect 5s MP4 at 720p to be ~1-3 MB. Use `<link rel="preload" as="video">` only for above-the-fold hero videos. All other video backgrounds lazy-load naturally via the browser.
-8. **Do NOT add video player dependencies** — native `<video>` only. No Plyr, Video.js, or other player libraries.
+2. **Pair with poster image:** Every video should reference an existing still poster image from `content_images` via the native `<video poster>` attribute. Never set `poster`/`poster_path` to the `.mp4` file.
+   When the poster source lives under `src/assets/**`, import it through Vite (or the `contentImages` index) and pass the resolved `.src` URL into the component. Do not render raw `src/assets/...` paths in HTML; they do not exist in `dist/`.
+3. **No static poster layer:** Do not render a sibling `<img class="video-bg__poster">` underneath the clip. The static image behind a semi-transparent video creates a double-exposure look; native `poster` is enough for first paint before playback.
+4. **Reduced-motion:** Do not hide generated clips by default. Keep opacity as-is or dim (`opacity: 0.5`) so users who explicitly wanted clips still see them. Test with `prefers-reduced-motion: reduce`.
+5. **Mobile policy:** On connections with `Save-Data` header or on devices below `768px`, consider lowering opacity or using only the native poster via a lightweight JS check. Do not silently remove requested video backgrounds without noting it in `STATUS.md`.
+6. **Layout safety:** The video background is `position: absolute` inside a `position: relative` container. Content sits above it with `position: relative; z-index: 2`. Never let video push or shift content layout.
+7. **Video files live in `public/videos/`** — Astro serves them as static files. Do not import video through `src/assets/`.
+8. **File size:** Expect 5s MP4 at 720p to be ~1-12 MB depending on provider. Use `<link rel="preload" as="video">` only for above-the-fold hero videos. All other video backgrounds lazy-load naturally via the browser.
+9. **Do NOT add video player dependencies** — native `<video>` only. No Plyr, Video.js, or other player libraries.
 
 ### Step 4.6: Optional GSAP / ScrollTrigger Sections
 
@@ -672,7 +760,7 @@ Do not add GSAP for simple decorative loops or one-off fade-ins.
 
 Use these engines only when `motion_direction.engine`, `motion_direction.optional_libraries`, `patterns/motion.yaml`, or the user explicitly selects them.
 
-**Astro route transitions:** In Astro 5, do **not** import or render deprecated `ViewTransitions`. If page-level client routing is needed, use the current Astro API:
+**Astro route transitions:** In Astro 6, do **not** import or render deprecated `ViewTransitions`. If page-level client routing is needed, use the current Astro API:
 
 ```astro
 ---
@@ -713,10 +801,10 @@ For each `special_sections` from the brief:
 rsync -avz --exclude='node_modules' --exclude='.git' --exclude='dist' --exclude='.opencode' \
   -e "ssh -p $PORT -i $KEY" ./ "$VPS:$SITE_DIR/"
 
-# Install, type-check, and build on VPS using bun. Never pipe through `tail`
-# or otherwise hide the full error output; the orchestrator needs exact
-# diagnostics.
-ssh -p $PORT -i $KEY $VPS "cd $SITE_DIR && bun install --silent && bun run check && bun run build"
+# Install, type-check, build, and restart Tina/Astro SSR on the VPS using the
+# shared wrapper. Never pipe through `tail` or otherwise hide full diagnostics.
+REMOTE_BUILD_CMD="/usr/local/bin/site-build \"$SITE_DIR\""
+ssh -p $PORT -i $KEY $VPS "$REMOTE_BUILD_CMD"
 ```
 
 If `astro check` or the build fails:
@@ -727,7 +815,7 @@ If `astro check` or the build fails:
 
 ### Step 8: Verify
 ```bash
-ssh -p $PORT -i $KEY $VPS "test -f $SITE_DIR/dist/index.html && echo STATUS:BUILD_OK || echo STATUS:BUILD_FAILED"
+ssh -p $PORT -i $KEY $VPS "test -f $SITE_DIR/dist/client/index.html && echo STATUS:BUILD_OK || echo STATUS:BUILD_FAILED"
 python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase final . --pipeline-dir pipeline/
 ```
 
@@ -743,6 +831,8 @@ build with type/syntax errors is considered a failed Phase 4.
 ## Quality Bar
 - All local source images → `<Image>` from `astro:assets`; raw `<img>` is allowed only for public/static URLs such as video poster fallbacks or externally supplied URLs that Astro cannot import
 - All images have `alt` text
+- **All visible `<img>` elements have `data-tina-field` (Tina-editable) or `data-static-media` (intentionally decorative)** — the validator enforces this
+- **All `contentImages[...]` usage is paired with a Tina image field override prop** so editors can replace backgrounds from the admin
 - Focus states on interactive elements (via `:focus-visible`)
 - Semantic HTML: `<header>`, `<main>`, `<footer>`, `<nav>`, `<section>`
 - Unique `<title>` and `<meta description>` per page
@@ -753,5 +843,5 @@ build with type/syntax errors is considered a failed Phase 4.
 - GSAP, if used, is dependency-gated, client-only, reduced-motion guarded, mobile-safe, cleanup-safe, and limited to transform/opacity animation
 - Other optional motion engines, if used, are dependency-gated, lazy-loaded, reduced-motion guarded, mobile-safe, and not mixed with another JS motion library in the same component
 - No hardcoded colors — theme tokens only
-- **Run the anti-pattern checklist from `references/reference-stack.md` §7** before syncing to VPS
+- **Run the anti-pattern checklist from `references/reference-stack.md` §9** before syncing to VPS
 - **Run the implementation checklist from `references/impeccable-ui.md` §6** before syncing to VPS

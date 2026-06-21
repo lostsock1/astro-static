@@ -1,9 +1,9 @@
-# Astro 5 + Tailwind v4 + shadcn/ui — Pipeline Reference
+# Astro 6 + Tailwind v4 + TinaCMS + shadcn/ui — Pipeline Reference
 
 > Reference document — not an agent. Loaded by name from `asset-generator.md`, `frontend-builder.md`, and `design-extractor.md`. Lives under `references/` so it doesn't appear in the agent picker.
 >
 > **Purpose:** Single source of truth for the astro-static pipeline agents.
-> Last verified: 2026-04-18 against official docs.
+> Last verified: 2026-06-19 against npm metadata and official TinaCMS Astro docs.
 
 ---
 
@@ -74,16 +74,17 @@ Video backgrounds are a distinct visual layer — not a motion engine — handle
 | Phase | 3.6 (after image generation, before frontend build) |
 | Agent | `@astro-static/vid-gen` (called by asset-generator) |
 | Frontend | `VideoBackground.astro` — native `<video autoplay muted loop playsinline>` |
-| Fallback | Poster image from Phase 3.5, or gradient. Reduced-motion hides video. |
+| Fallback | Native `<video poster>` still image from Phase 3.5, or gradient. Reduced-motion dims/keeps video visible by default. |
 | Player deps | None — native `<video>` only. No Plyr, Video.js, etc. |
 
 When video backgrounds are selected:
 - Only generate for sections the brief explicitly flags (hero, CTA, section-bg, footer-bg).
-- Pair every video with an existing poster image from `content_images`.
+- Pair every video with an existing still poster image from `content_images`; never use the MP4 as its own poster.
+- Do not render a separate static `<img>` behind a playing video background; it creates a double-exposure look when opacity changes.
 - Limit to 2-3 videos per page for bandwidth.
 - Include `negative_prompt: "text, watermark, logo, blurry, shaky, fast cuts, flickering"` in all requests.
 - Emphasize slow, subtle motion — backgrounds must not distract from content.
-- Image-to-video mode is available when `image_url` is provided (uses same kling-3.0 model).
+- Image-to-video mode is available when `image_url` is provided; use a dedicated verified i2v model from the PPQ model library, not the default t2v model.
 
 GSAP is a capability of the team, not the default. Use it only when the creative brief or extracted `patterns/motion.yaml` calls for timeline control that CSS cannot express cleanly.
 
@@ -131,8 +132,9 @@ Agents must not silently invent new artifact fields or alternate token names. If
 ### Setup: NO tailwind.config.js
 
 ```css
-/* src/styles/global.css — the ONLY CSS entry point */
+/* src/styles/theme.css — preferred Tailwind v4 CSS entry point */
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 @theme {
   /* Colors — use oklch() for wide gamut */
@@ -188,6 +190,15 @@ Agents must not silently invent new artifact fields or alternate token names. If
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 ```
+
+`src/styles/global.css` is allowed only as a thin entry wrapper if the scaffold
+already uses it; it must import both `tailwindcss` and `./theme.css`, and
+`BaseLayout.astro` must import that wrapper. Never put the Tailwind entry CSS in
+`public/`, because files there bypass Vite and ship raw `@import`/`@theme`.
+
+OKLCH lightness must be a fraction (`0.72`) or a percentage (`72%`). Extracted
+tokens often report `9.4` to mean `9.4%`; normalize to `0.094` or `9.4%`, never
+`oklch(9.4 ...)`.
 
 ### Vite plugin (NOT @astrojs/tailwind)
 
@@ -296,7 +307,7 @@ color: var(--color-red-500);
 
 ---
 
-## 2. Astro 5 Content Collections
+## 2. Astro 6 Content Collections
 
 ### Config Location CHANGED
 
@@ -304,7 +315,7 @@ color: var(--color-red-500);
 # ❌ OLD (Astro 4)
 src/content/config.ts
 
-# ✅ NEW (Astro 5)
+# ✅ CURRENT (Astro 6)
 src/content.config.ts
 ```
 
@@ -353,7 +364,7 @@ const { Content } = await render(entry);
 
 ### Migration Cheat Sheet
 
-| Astro 4 | Astro 5 |
+| Legacy Astro | Astro 6 |
 |---|---|
 | `src/content/config.ts` | `src/content.config.ts` |
 | `type: 'content'` | `loader: glob({ pattern: '**/*.md', base: './src/content/blog' })` |
@@ -376,7 +387,7 @@ import heroImage from '../assets/hero.png';
 {/* Local image — auto-optimized (ALWAYS use this) */}
 <Image src={heroImage} alt="Hero" width={800} height={600} />
 
-{/* Responsive layout (Astro 5.10+) */}
+{/* Responsive layout (Astro 6+) */}
 <Image src={heroImage} alt="Hero" layout="constrained" width={800} height={600} />
 
 {/* Full-width hero */}
@@ -441,24 +452,53 @@ const posts = defineCollection({
 export const collections = { posts };
 ```
 
-Content is file-backed under `src/content/<collection>/`. Render with `getCollection()` / `getEntry()` from `astro:content`. Keep this project static-only: do not add CMS admin routes, server-only integrations, or runtime content APIs.
+Content is file-backed under `src/content/<collection>/`. Render with `getCollection()` / `getEntry()` from `astro:content`. Public pages stay statically prerendered. TinaCMS adds only editor/admin surfaces: generated `public/admin/`, `/tina-island/*` on-demand visual-editing routes, and `/api/tina/*` self-hosted GraphQL backend routes.
 
 ---
 
-## 6. Complete astro.config.mjs
+## 6. TinaCMS Static Visual Editing
+
+Generated astro-static sites use TinaCMS as the CMS path:
+
+- `@tinacms/astro` provides React-free visual editing for Astro.
+- Keep `output: "static"` for public pages.
+- Use `@astrojs/node` standalone adapter for on-demand editor routes.
+- `tina/config.ts` mirrors `src/content.config.ts` collection names and fields.
+- `tina/config.ts` must import `LocalAuthProvider` from `tinacms` and set `authProvider: new LocalAuthProvider()` so the admin stays self-hosted and never redirects to TinaCloud.
+- Every page/section collection must define `ui.router` so document clicks open the live visual editor route, not just the form editor.
+- Every Tina data loader must wrap generated client queries in `requestWithMetadata()`.
+- Every visible editable DOM node must carry `data-tina-field={tinaField(source, 'fieldName')}`. This is what enables click-to-edit outlines/focus in the preview.
+- For maximum Wix-like editing, model pages as ordered blocks/sections so editors can add, remove, and reorder components within the supported design system. Tina does component/block editing, not freeform canvas dragging.
+- Use `@tinacms/astro/TinaIsland.astro` to wrap editable regions.
+- Keep `export const prerender = false` on `src/pages/tina-island/[name].ts` and `src/pages/api/tina/[...routes].ts`.
+- Self-host production saves through `@tinacms/datalayer`, SQLite (`sqlite-level`), and the Gitea contents API.
+- `tinacms build` generates `public/admin/index.html` and `tina/__generated__/`; do not hand-author generated admin files.
+
+Latest compatible baseline as of 2026-06-19: `astro@^6.4.8`, `@astrojs/node@^10.1.4`, `@astrojs/mdx@^6.0.3`, `@astrojs/react@^5.0.7`, `@astrojs/sitemap@^3.7.3`, `@tinacms/astro@^0.5.0`, `tinacms@^3.9.3`, `@tinacms/cli@^2.5.1`, `@tinacms/datalayer@^2.0.25`, `sqlite-level@^2.1.1`, `tailwindcss@^4.3.1`, `@tailwindcss/vite@^4.3.1`.
+
+---
+
+## 7. Complete astro.config.mjs
 
 ```js
 import { defineConfig } from 'astro/config';
+import node from '@astrojs/node';
 import react from '@astrojs/react';
 import mdx from '@astrojs/mdx';
-import markdoc from '@astrojs/markdoc';
+import sitemap from '@astrojs/sitemap';
+import tina from '@tinacms/astro/integration';
+import { tinaAdminDevRedirect } from '@tinacms/astro/vite';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   output: 'static',
+  adapter: node({ mode: 'standalone' }),
   site: 'https://example.com',
-  integrations: [react(), mdx(), markdoc()],
-  vite: { plugins: [tailwindcss()] },
+  integrations: [react(), mdx(), tina(), sitemap()],
+  vite: {
+    plugins: [tailwindcss(), tinaAdminDevRedirect()],
+    ssr: { noExternal: ['@tinacms/astro', '@tinacms/bridge'] },
+  },
   image: {
     layout: 'constrained',
     responsiveStyles: true,
@@ -467,9 +507,42 @@ export default defineConfig({
 });
 ```
 
+## 8. Complete tina/config.ts auth baseline
+
+Every generated Tina config must include a self-hosted admin auth provider and visual-editor router entries:
+
+```ts
+import { LocalAuthProvider, defineConfig } from 'tinacms';
+
+const routeForDocument = (document?: { lang?: string }) => {
+  if (document?.lang === 'es') return '/es';
+  if (document?.lang === 'en') return '/en';
+  return '/';
+};
+
+export default defineConfig({
+  clientId: null,
+  token: process.env.TINA_TOKEN ?? null,
+  authProvider: new LocalAuthProvider(),
+  contentApiUrlOverride: '/api/tina/gql',
+  branch: process.env.GITEA_BRANCH ?? 'main',
+  build: { outputFolder: 'admin', publicFolder: 'public' },
+  schema: {
+    collections: [{
+      name: 'sections',
+      path: 'src/content/sections',
+      ui: { router: ({ document }) => routeForDocument(document) },
+      fields: [],
+    }],
+  },
+});
+```
+
+Without `authProvider`, Tina falls back to TinaCloud sign-in (`https://app.tina.io/signin?...`). That is a pipeline failure.
+
 ---
 
-## 7. Quick Anti-Pattern Checklist
+## 9. Quick Anti-Pattern Checklist
 
 Before submitting code, verify NONE of these exist:
 
@@ -487,6 +560,166 @@ Before submitting code, verify NONE of these exist:
 - [ ] `<img>` → REPLACE with `<Image>` from `astro:assets`
 - [ ] `@astrojs/tailwind` → REPLACE with `@tailwindcss/vite`
 - [ ] `output: 'hybrid'` → REPLACE with `output: 'static'`
+- [ ] Tina config without `authProvider: new LocalAuthProvider()` → ADD it; never allow TinaCloud sign-in fallback
+- [ ] Tina collections without `ui.router` → ADD route mapping so content opens the visual editor
+- [ ] Tina-rendered text/media without `data-tina-field` → ADD `tinaField()` markers to visible editable HTML elements
+- [ ] Tina data queries not wrapped in `requestWithMetadata()` → WRAP them or visual preview cannot map forms/fields
+- [ ] `<img>` without `data-tina-field` or `data-static-media` → ADD Tina image field wiring or mark decorative
+- [ ] `contentImages[...]` without a Tina image override prop → ADD `bgImage`/`image` prop that resolves Tina-first
+- [ ] `.astro` frontmatter closed with `?>` or `</script>` → REPLACE with `---`
+- [ ] `oklch(9.4 0.01 140)` style lightness → REPLACE with `oklch(9.4% 0.01 140)` or `oklch(0.094 0.01 140)`
+- [ ] `<video poster="/videos/foo.mp4">` → REPLACE poster with still `.webp`/`.png`/`.jpg`
+- [ ] `<img class="video-bg__poster">` under a video background → DELETE and use native `<video poster>` only
+- [ ] `.video-bg__video { display: none }` under reduced-motion → DIM or freeze, do not hide requested clips by default
 - [ ] `shadow-sm` used as "small shadow" → USE `shadow-xs` (v4 renamed)
 - [ ] `rounded-sm` used as "small radius" → USE `rounded-xs` (v4 renamed)
 - [ ] `outline-none` → USE `outline-hidden`
+
+---
+
+## 10. Tina-Editable Images — Canonical Pattern
+
+Every image surface in a Tina-enabled astro-static site MUST be admin-editable. The pipeline validator (`validate-pipeline.py`) enforces this at build time. The pattern reconciles the Phase 3.5 asset-generator (optimized local images with LQIP) with Tina media editing.
+
+### The "Tina Override with Asset-Gen Fallback" Pattern
+
+```
+Tina image field (editor upload)  ──wins──>  <img src={tinaPath} data-tina-field={...} />
+        │
+        └── empty? ──fallback──>  contentImages['asset-gen-id'].src
+```
+
+Editors get a media picker in the Tina admin. If they never upload a replacement, the pipeline-generated default renders. Both paths produce a working site.
+
+### Schema (tina/config.ts + content.config.ts)
+
+Every visual collection (sections, cards, gallery, team, products, hero) MUST include image fields:
+
+```typescript
+// tina/config.ts
+fields: [
+  { name: 'title', type: 'string', required: true },
+  { name: 'image', label: 'Image', type: 'image' },
+  { name: 'imageAlt', label: 'Image Alt Text', type: 'string' },
+]
+
+// src/content.config.ts — mirror with Astro image() helper
+schema: ({ image }) => z.object({
+  title: z.string(),
+  image: image().optional(),
+  imageAlt: z.string().optional(),
+})
+```
+
+Tina `type: 'image'` fields render a media picker in the admin that uploads to the Git-backed media store. The value is a string path (e.g. `/media/hero-v2.webp`).
+
+### Component Pattern
+
+```astro
+---
+import { contentImages } from '@/lib/content-images';
+
+interface Props {
+  bgImage?: string;                    // Tina-uploaded override
+  fields?: { bgImage?: string };       // tinaField() metadata for click-to-edit
+}
+const { bgImage, fields = {} } = Astro.props;
+
+// Resolve: Tina field wins, asset-gen default is the fallback
+const fallback = contentImages['hero-background'];
+const src = bgImage ?? fallback?.src.src;
+---
+
+<section class="relative overflow-hidden">
+  {src && (
+    <div data-tina-field={fields.bgImage}>
+      <img src={src} alt="" data-tina-field={fields.bgImage} class="absolute inset-0 w-full h-full object-cover" />
+    </div>
+  )}
+  <div class="absolute inset-0 bg-gradient-to-b from-background/80 to-background/90 z-[1]"></div>
+  <div class="relative z-[2]">
+    <!-- content -->
+  </div>
+</section>
+```
+
+### Island Data Wiring
+
+Pass the Tina image value AND its field metadata through `propsFromData`:
+
+```typescript
+// src/lib/tina/islands.ts
+hero: {
+  fetch: fetchHome,
+  component: Hero,
+  wrapper,
+  propsFromData: (data, params) => {
+    const hero = sectionById(home(data), 'hero');
+    return {
+      bgImage: hero?.image,                      // string path from Tina
+      fields: {
+        bgImage: editableField(hero, 'image'),   // tinaField() for click-to-edit
+      },
+    };
+  },
+},
+```
+
+### Static Page Wiring
+
+On statically-rendered pages (TinaIsland children), pass the section's `image` field:
+
+```astro
+---
+const heroSection = section('hero')?.data;
+---
+<TinaIsland name="hero" wrapper={islands.hero.wrapper} params={{ lang }}>
+  <Hero bgImage={heroSection?.image} />
+</TinaIsland>
+```
+
+### Per-Card Background Images
+
+For repeating components (service cards, gallery items, product cards), each item carries its own image field:
+
+```astro
+---
+interface Card {
+  title: string;
+  body: string;
+  bgImage?: string;               // per-card Tina image
+  fields?: { bgImage?: string };
+}
+---
+{cards.map((card) => (
+  <div class="relative overflow-hidden">
+    {card.bgImage && (
+      <img src={card.bgImage} alt="" data-tina-field={card.fields?.bgImage}
+           class="absolute inset-0 w-full h-full object-cover opacity-25" />
+    )}
+    <!-- card content -->
+  </div>
+))}
+```
+
+### Exempting Decorative Images
+
+Icons, avatar fallbacks, and purely decorative SVGs that should never be editor-replaced use `data-static-media`:
+
+```astro
+<img src="/icon-arrow.svg" alt="" data-static-media />
+```
+
+The validator exempts these from the `data-tina-field` requirement.
+
+### What the Validator Catches
+
+| Pattern | Error message |
+|---------|---------------|
+| `<img>` without `data-tina-field` or `data-static-media` | `img element missing data-tina-field; wire it to a Tina image field or mark data-static-media if decorative` |
+| `contentImages[...]` without Tina override prop | `contentImages[] usage found without Tina image field override; add an optional image/bgImage prop, resolve Tina-first (tinaField ?? contentImages[...]), and render data-tina-field on the <img>` |
+| Hardcoded `/images/...` or `/videos/...` paths | `hardcoded media path must be Tina/content/manifest-backed` |
+
+### Media Store Configuration
+
+Tina media uploads commit files to the Git repository via the Gitea provider. The default upload path is `public/media/`. Ensure `.gitignore` does NOT exclude `public/media/`. The `tina/config.ts` `build.publicFolder: 'public'` setting controls where Tina writes uploaded media.
