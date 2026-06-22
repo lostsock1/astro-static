@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,6 +119,12 @@ def _phases_for(profile: str) -> dict[str, dict[str, Any]]:
             'check_theme': True, 'check_layout': True, 'check_asset_paths': True,
             'strict': True, 'description': 'Full post-build validation',
         },
+        'instagram': {
+            'required': set(),
+            'optional': set(),
+            'check_theme': False, 'check_layout': False, 'check_asset_paths': False,
+            'strict': False, 'description': 'Instagram extraction gate (00-instagram/)',
+        },
     }
 
 # Default PHASES (astro-static) — preserved for backward compat. Mutated by
@@ -130,6 +137,182 @@ class Issue:
     level: str
     artifact: str
     message: str
+
+
+SOURCE_SUFFIXES = ('.astro', '.ts', '.tsx', '.js', '.jsx')
+TEXT_NODE_TAGS = {
+    'a', 'button', 'figcaption', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'label', 'legend', 'li', 'p', 'small', 'span', 'strong', 'summary',
+}
+COPY_WORD_RE = re.compile(r'[A-Za-zÀ-ÖØ-öø-ÿ]{3,}')
+MEDIA_LITERAL_RE = re.compile(
+    r'\b(?:src|poster|videoSrc|posterPath|image|bgImage)\s*=\s*["\'](?P<path>/(?:assets|images|media|uploads|videos)/[^"\']+)["\']'
+)
+MEDIA_DEFAULT_RE = re.compile(
+    r'\b(?:src|poster|videoSrc|posterPath|image|bgImage)\s*[:=]\s*["\'](?P<path>/(?:assets|images|media|uploads|videos)/[^"\']+)["\']'
+)
+SERVICE_BULLET_ARRAY_RE = re.compile(
+    r'\b(?:serviceBullets|bullets)\s*[:=]\s*\[[^\]]*["\'][^"\']*\s+[^"\']*["\']',
+    re.DOTALL,
+)
+# Matches <img ...> (including self-closing) so we can require data-tina-field
+# or data-static-media on every rendered image in Tina-enabled projects.
+IMG_TAG_RE = re.compile(r'<img\b(?P<attrs>[^>]*?)/?>', re.IGNORECASE)
+# Detects contentImages[...] usage — the asset-generator import index. Components
+# that use it MUST also accept a Tina image field prop and resolve Tina-first.
+CONTENT_IMAGES_USAGE_RE = re.compile(r'contentImages\s*\[')
+
+
+def line_number(text: str, offset: int) -> int:
+    return text.count('\n', 0, offset) + 1
+
+
+def source_files(src_root: Path) -> list[Path]:
+    if not src_root.exists():
+        return []
+    return [path for path in src_root.rglob('*') if path.is_file() and path.suffix in SOURCE_SUFFIXES]
+
+
+def strip_astro_frontmatter(text: str) -> tuple[str, str]:
+    if text.startswith('---'):
+        end = text.find('\n---', 3)
+        if end != -1:
+            return text[: end + 4], text[end + 4:]
+    return '', text
+
+
+def strip_non_visible_blocks(markup: str) -> str:
+    for pattern in [
+        r'<!--.*?-->',
+        r'<script\b.*?</script>',
+        r'<style\b.*?</style>',
+        r'<svg\b.*?</svg>',
+    ]:
+        markup = re.sub(pattern, '', markup, flags=re.DOTALL | re.IGNORECASE)
+    return markup
+
+
+def strip_tags(text: str) -> str:
+    return re.sub(r'<[^>]+>', '', text)
+
+
+def looks_like_copy(text: str) -> bool:
+    compact = re.sub(r'\s+', ' ', text).strip()
+    if not compact or compact.startswith('{') and compact.endswith('}'):
+        return False
+    return COPY_WORD_RE.search(compact) is not None
+
+
+def snippet(text: str, limit: int = 80) -> str:
+    compact = re.sub(r'\s+', ' ', text).strip()
+    return compact if len(compact) <= limit else compact[: limit - 1] + '…'
+
+
+def has_static_escape(attrs: str) -> bool:
+    return any(flag in attrs for flag in ('data-static-copy', 'data-static-media', 'aria-hidden="true"', "aria-hidden='true'"))
+
+
+def validate_tina_editable_surfaces(project_root: Path, files: list[Path], issues: list[Issue]) -> None:
+    """Guard Tina-enabled builds against slipping visible copy/media back into source.
+
+    The validator cannot prove semantic editability perfectly without compiling the
+    Astro component tree, but it catches the high-risk regressions that break
+    Tina visual editing in practice: literal marketing copy in markup, visible
+    typewriter nodes without click-to-edit metadata, source-level media literals,
+    and hardcoded service bullet arrays.
+    """
+    for source_path in files:
+        try:
+            content = source_path.read_text()
+        except UnicodeDecodeError:
+            continue
+        rel = str(source_path.relative_to(project_root))
+        frontmatter, markup = strip_astro_frontmatter(content)
+        visible_markup = strip_non_visible_blocks(markup)
+        is_astro = source_path.suffix == '.astro'
+
+        # ── Markup-level checks (.astro files only) ───────────────────
+        # .ts/.tsx files are data/logic modules; they don't render <img> or
+        # text nodes directly, so scanning them for markup patterns produces
+        # false positives.
+        if is_astro:
+            text_tag_pattern = '|'.join(sorted(TEXT_NODE_TAGS))
+            for match in re.finditer(
+                rf'<(?P<tag>{text_tag_pattern})(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=tag)>',
+                visible_markup,
+                flags=re.DOTALL,
+            ):
+                tag = match.group('tag').lower()
+                if tag not in TEXT_NODE_TAGS:
+                    continue
+                attrs = match.group('attrs')
+                body = match.group('body')
+                if has_static_escape(attrs) or 'data-tina-field' in attrs:
+                    continue
+                plain_body = strip_tags(body)
+                if 'data-typewriter' in attrs and ('{' in plain_body or looks_like_copy(plain_body)):
+                    issues.append(Issue(
+                        'error', rel,
+                        f'line {line_number(visible_markup, match.start())}: data-typewriter text node is missing data-tina-field; bind this text to Tina metadata or mark it data-static-copy if intentionally static',
+                    ))
+                elif '{' not in plain_body and looks_like_copy(plain_body):
+                    issues.append(Issue(
+                        'error', rel,
+                        f'line {line_number(visible_markup, match.start())}: hardcoded visible text not backed by Tina field: "{snippet(plain_body)}"',
+                    ))
+
+            # Every <img> must be Tina-backed or explicitly static.
+            for match in IMG_TAG_RE.finditer(visible_markup):
+                attrs = match.group('attrs')
+                if has_static_escape(attrs) or 'data-tina-field' in attrs:
+                    continue
+                issues.append(Issue(
+                    'error', rel,
+                    f'line {line_number(visible_markup, match.start())}: img element missing data-tina-field; wire it to a Tina image field or mark data-static-media if decorative',
+                ))
+
+        # ── Source-level checks (all Tina-enabled source files) ───────
+        for match in MEDIA_LITERAL_RE.finditer(visible_markup):
+            line_start = visible_markup.rfind('\n', 0, match.start()) + 1
+            line_end = visible_markup.find('\n', match.start())
+            if line_end == -1:
+                line_end = len(visible_markup)
+            line = visible_markup[line_start:line_end]
+            if 'data-tina-field' in line or 'data-static-media' in line:
+                continue
+            issues.append(Issue(
+                'error', rel,
+                f'line {line_number(visible_markup, match.start())}: hardcoded media path must be Tina/content/manifest-backed: {match.group("path")}',
+            ))
+
+        for match in MEDIA_DEFAULT_RE.finditer(frontmatter):
+            issues.append(Issue(
+                'error', rel,
+                f'line {line_number(frontmatter, match.start())}: hardcoded media path must be Tina/content/manifest-backed: {match.group("path")}',
+            ))
+
+        if SERVICE_BULLET_ARRAY_RE.search(frontmatter):
+            issues.append(Issue(
+                'error', rel,
+                'hardcoded service bullet array found; move list copy into Tina-backed content and render with data-tina-field indexes',
+            ))
+
+        # contentImages[] usage requires a Tina image field override prop so
+        # editors can replace the asset-generator default from the admin.
+        if CONTENT_IMAGES_USAGE_RE.search(content):
+            has_tina_override = (
+                'bgImage' in frontmatter
+                or 'image' in frontmatter and 'fields' in frontmatter
+                or 'Astro.props' in frontmatter and ('bgImage' in frontmatter or 'image' in frontmatter)
+                or re.search(r'\b(?:bgImage|heroImage|cardImage)\b.*Astro\.props', frontmatter) is not None
+                or 'bgImage ??' in content
+                or 'image ??' in content
+            )
+            if not has_tina_override:
+                issues.append(Issue(
+                    'error', rel,
+                    'contentImages[] usage found without Tina image field override; add an optional image/bgImage prop, resolve Tina-first (tinaField ?? contentImages[...]), and render data-tina-field on the <img>',
+                ))
 
 
 def load_json(path: Path) -> Any:
@@ -185,7 +368,7 @@ def _format_jsonschema_path(absolute_path: Any) -> str:
 
 def validate_with_jsonschema(value: Any, schema: dict[str, Any], issues: list[Issue], artifact: str) -> None:
     """Full jsonschema validation — supports oneOf/anyOf/allOf, format, pattern, additionalProperties:false."""
-    validator = Draft202012Validator(schema)
+    validator = Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
     for err in sorted(validator.iter_errors(value), key=lambda e: e.path):
         path = _format_jsonschema_path(err.absolute_path)
         # err.message already contains enough detail (e.g. "None is not of type 'string'")
@@ -232,6 +415,56 @@ def validate_value(value: Any, schema: dict[str, Any], root: dict[str, Any], pat
         validate_with_fallback(value, schema, root, path, issues, artifact)
 
 
+SECRET_ARTIFACTS = {'vps-connection.json', 'bootstrap-result.json'}
+
+
+def validate_secret_permissions(artifact_path: Path, artifact_name: str, issues: list[Issue]) -> None:
+    """Secret-bearing pipeline artifacts must never be group/world-readable."""
+    try:
+        mode = artifact_path.stat().st_mode & 0o777
+    except OSError as exc:
+        issues.append(Issue('error', artifact_name, f'cannot stat secret file permissions: {exc}'))
+        return
+    if mode != 0o600:
+        issues.append(Issue(
+            'error', artifact_name,
+            f'secret file permissions must be 0600, got {mode:04o}; chmod 0600 {artifact_name}',
+        ))
+
+
+def validate_safe_relative_artifact_path(
+    project_root: Path,
+    artifact_name: str,
+    logical_path: str,
+    path_value: str,
+    issues: list[Issue],
+) -> Path | None:
+    """Return resolved target when path stays inside project_root; otherwise emit an error."""
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        issues.append(Issue(
+            'error', artifact_name,
+            f'unsafe artifact path at {logical_path}: absolute paths are not allowed: {path_value}',
+        ))
+        return None
+    if '..' in candidate.parts:
+        issues.append(Issue(
+            'error', artifact_name,
+            f'unsafe artifact path at {logical_path}: path traversal is not allowed: {path_value}',
+        ))
+        return None
+    try:
+        target = (project_root / candidate).resolve()
+        target.relative_to(project_root.resolve())
+    except ValueError:
+        issues.append(Issue(
+            'error', artifact_name,
+            f'unsafe artifact path at {logical_path}: resolved path escapes project root: {path_value}',
+        ))
+        return None
+    return target
+
+
 def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str, schema_name: str, issues: list[Issue], missing_is_error: bool, check_asset_paths: bool) -> None:
     artifact_path = pipeline_dir / artifact_name
     schema_path = SCHEMA_DIR / schema_name
@@ -258,6 +491,9 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
 
     validate_value(data, schema, schema, '$', issues, artifact_name)
 
+    if artifact_name in SECRET_ARTIFACTS:
+        validate_secret_permissions(artifact_path, artifact_name, issues)
+
     if artifact_name == '02-asset-manifest.json' and isinstance(data, dict) and check_asset_paths:
         for key_path in [
             ('logo', 'primary_path'),
@@ -277,12 +513,15 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
                     break
                 node = node[key]
             if isinstance(node, str):
-                target = project_root / node
-                if not target.exists():
+                logical_path = '.'.join(key_path)
+                target = validate_safe_relative_artifact_path(project_root, artifact_name, logical_path, node, issues)
+                if target is not None and not target.exists():
                     issues.append(Issue('error', artifact_name, f'{".".join(key_path)} points to missing file: {target}'))
         font_config = data.get('font_config')
-        if isinstance(font_config, str) and not (project_root / font_config).exists():
-            issues.append(Issue('error', artifact_name, f'font_config points to missing file: {project_root / font_config}'))
+        if isinstance(font_config, str):
+            font_target = validate_safe_relative_artifact_path(project_root, artifact_name, 'font_config', font_config, issues)
+            if font_target is not None and not font_target.exists():
+                issues.append(Issue('error', artifact_name, f'font_config points to missing file: {font_target}'))
 
     if artifact_name == '01-creative-brief.json' and isinstance(data, dict):
         if data.get('_requires_human_confirmation') is True:
@@ -296,6 +535,9 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
         if og_path and isinstance(og_path, str) and og_path.startswith('src/'):
             issues.append(Issue('warning', artifact_name,
                 f'og_image path is {og_path} — should be in public/ for static serving'))
+        if og_path and isinstance(og_path, str) and og_path.lower().endswith('.svg'):
+            issues.append(Issue('warning', artifact_name,
+                f'og_image path is {og_path} — prefer public/og-image.png for social preview compatibility'))
 
         # Content images check: verify every manifest entry's file exists.
         # Canonical key is `path` (orchestrator Phase 3.5 normalizes from the
@@ -313,12 +555,100 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
                     issues.append(Issue('warning', artifact_name,
                         f'content_images entry uses legacy `output_path` key; rename to `path`: id={img.get("id", "?")}'))
                 if isinstance(path_value, str):
-                    target = project_root / path_value
-                    if not target.exists():
+                    target = validate_safe_relative_artifact_path(
+                        project_root,
+                        artifact_name,
+                        f'content_images[{img.get("id", "?")}].path',
+                        path_value,
+                        issues,
+                    )
+                    if target is not None and not target.exists():
                         status = img.get('status', '')
                         if status != 'failed':
                             issues.append(Issue('warning', artifact_name,
                                 f'content image missing: {path_value} (status={status or "unknown"})'))
+
+        # Video backgrounds check: generated videos must be public MP4 assets,
+        # and poster_path must be a real still image. A prior run accidentally
+        # used the MP4 as its own poster, which caused static artifacts behind
+        # the clip and poor first paint in browsers.
+        video_backgrounds = data.get('video_backgrounds', [])
+        if isinstance(video_backgrounds, list):
+            for video in video_backgrounds:
+                if not isinstance(video, dict):
+                    continue
+                status = video.get('status', '')
+                output_path = video.get('output_path')
+                poster_path = video.get('poster_path')
+                if isinstance(output_path, str) and status == 'generated':
+                    video_target = validate_safe_relative_artifact_path(
+                        project_root,
+                        artifact_name,
+                        f'video_backgrounds[{video.get("id", "?")}].output_path',
+                        output_path,
+                        issues,
+                    )
+                    if not output_path.startswith('public/videos/'):
+                        issues.append(Issue('error', artifact_name,
+                            f'generated video must live under public/videos/: id={video.get("id", "?")} output_path={output_path}'))
+                    if video_target is None:
+                        pass
+                    elif not video_target.exists():
+                        issues.append(Issue('error', artifact_name,
+                            f'generated video missing: id={video.get("id", "?")} output_path={output_path}'))
+                    elif video_target.stat().st_size <= 100 * 1024:
+                        issues.append(Issue('error', artifact_name,
+                            f'generated video too small: id={video.get("id", "?")} output_path={output_path}'))
+                if isinstance(poster_path, str) and poster_path:
+                    lower_poster = poster_path.lower()
+                    if isinstance(output_path, str) and poster_path == output_path:
+                        issues.append(Issue('error', artifact_name,
+                            f'video poster_path must be a still image, not the MP4 output_path: id={video.get("id", "?")}'))
+                    if lower_poster.endswith(('.mp4', '.mov', '.m4v', '.webm')):
+                        issues.append(Issue('error', artifact_name,
+                            f'video poster_path must not be a video file: id={video.get("id", "?")} poster_path={poster_path}'))
+                    poster_target = validate_safe_relative_artifact_path(
+                        project_root,
+                        artifact_name,
+                        f'video_backgrounds[{video.get("id", "?")}].poster_path',
+                        poster_path,
+                        issues,
+                    )
+                    if status == 'generated' and poster_target is not None and not poster_target.exists():
+                        issues.append(Issue('error', artifact_name,
+                            f'video poster_path points to missing file: id={video.get("id", "?")} poster_path={poster_path}'))
+
+        # HyperFrames hero video check: generated by Phase 3.8 (default-on, zero-cost).
+        # Must exist at public/videos/hero-intro.mp4 and be a valid MP4 over 100 KB.
+        hf_hero = data.get('hyperframes_hero')
+        if isinstance(hf_hero, dict):
+            hf_path = hf_hero.get('path')
+            if isinstance(hf_path, str):
+                hf_target = validate_safe_relative_artifact_path(project_root, artifact_name, 'hyperframes_hero.path', hf_path, issues)
+                if not hf_path.startswith('public/videos/'):
+                    issues.append(Issue('error', artifact_name,
+                        f'hyperframes_hero video must live under public/videos/: path={hf_path}'))
+                if hf_target is None:
+                    pass
+                elif not hf_target.exists():
+                    issues.append(Issue('warning', artifact_name,
+                        f'hyperframes_hero video missing (Phase 3.8 may have been skipped): path={hf_path}'))
+                elif hf_target.stat().st_size <= 100 * 1024:
+                    issues.append(Issue('error', artifact_name,
+                        f'hyperframes_hero video too small (< 100 KB): path={hf_path} size={hf_target.stat().st_size}'))
+                elif not hf_path.lower().endswith('.mp4'):
+                    issues.append(Issue('error', artifact_name,
+                        f'hyperframes_hero video must be MP4: path={hf_path}'))
+            hf_template = hf_hero.get('template')
+            if hf_template and isinstance(hf_template, str) and hf_template not in (
+                'kinetic-type', 'swiss-grid', 'warm-grain', 'blank',
+            ):
+                issues.append(Issue('warning', artifact_name,
+                    f'hyperframes_hero template unknown: {hf_template} (expected one of kinetic-type, swiss-grid, warm-grain, blank)'))
+            hf_intensity = hf_hero.get('intensity')
+            if hf_intensity and isinstance(hf_intensity, str) and hf_intensity not in ('subtle', 'moderate'):
+                issues.append(Issue('warning', artifact_name,
+                    f'hyperframes_hero intensity unknown: {hf_intensity} (expected subtle or moderate)'))
 
 
 
@@ -365,12 +695,82 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
         if (pipeline_dir / artifact).exists():
             validate_artifact(project_root, pipeline_dir, artifact, schema, issues, missing_is_error=True, check_asset_paths=False)
 
+    # ── Instagram extraction validation ───────────────────────────────
+    if phase_name == 'instagram':
+        ig_dir = pipeline_dir / '00-instagram'
+        if ig_dir.exists():
+            # profile.json must exist and parse
+            profile_file = ig_dir / 'profile.json'
+            if profile_file.exists():
+                try:
+                    profile_data = json.loads(profile_file.read_text())
+                    if not isinstance(profile_data, dict):
+                        issues.append(Issue('error', '00-instagram/profile.json', 'root must be a JSON object'))
+                    else:
+                        for field in ['schema_version', 'profile', 'extraction_metadata']:
+                            if field not in profile_data:
+                                issues.append(Issue('error', '00-instagram/profile.json', f'missing required field: {field}'))
+                        profile = profile_data.get('profile', {})
+                        if isinstance(profile, dict):
+                            if not profile.get('username'):
+                                issues.append(Issue('error', '00-instagram/profile.json', 'profile.username is empty'))
+                            if not profile.get('display_name'):
+                                issues.append(Issue('warning', '00-instagram/profile.json', 'profile.display_name is empty'))
+                        posts = profile_data.get('posts', [])
+                        if isinstance(posts, list) and len(posts) == 0:
+                            issues.append(Issue('warning', '00-instagram/profile.json', 'no posts extracted'))
+                        extraction = profile_data.get('extraction_metadata', {})
+                        if isinstance(extraction, dict) and not extraction.get('stealth_used', True):
+                            issues.append(Issue('warning', '00-instagram/profile.json', 'extraction did not use stealth — data may be incomplete'))
+                except (json.JSONDecodeError, OSError) as exc:
+                    issues.append(Issue('error', '00-instagram/profile.json', f'cannot parse: {exc}'))
+            else:
+                issues.append(Issue('error', '00-instagram/', 'profile.json missing — Instagram extraction did not complete'))
+
+            # Check downloaded assets exist
+            assets_dir = ig_dir / 'assets'
+            if assets_dir.exists():
+                asset_files = list(assets_dir.glob('*'))
+                if not asset_files:
+                    issues.append(Issue('warning', '00-instagram/assets/', 'no downloaded images'))
+                else:
+                    for f in asset_files:
+                        if f.stat().st_size < 1024:
+                            issues.append(Issue('warning', str(f.relative_to(pipeline_dir)), f'image too small ({f.stat().st_size} bytes) — may be an error page'))
+            else:
+                issues.append(Issue('warning', '00-instagram/', 'assets/ directory missing — no images downloaded'))
+
+            # Check extraction report
+            report = ig_dir / 'extraction-report.md'
+            if not report.exists():
+                issues.append(Issue('warning', '00-instagram/', 'extraction-report.md missing'))
+        else:
+            issues.append(Issue('error', '00-instagram/', 'directory missing — Instagram extraction phase did not run'))
+
     theme_css = project_root / 'src/styles/theme.css'
     if check_theme:
         if theme_css.exists():
             content = theme_css.read_text()
             if '@theme' not in content:
                 issues.append(Issue('error', 'src/styles/theme.css', 'missing @theme block'))
+            global_css = project_root / 'src/styles/global.css'
+            global_content = global_css.read_text() if global_css.exists() else ''
+            theme_has_tailwind_import = re.search(r'@import\s+["\']tailwindcss["\']', content) is not None
+            global_has_tailwind_entry = (
+                re.search(r'@import\s+["\']tailwindcss["\']', global_content) is not None
+                and ('theme.css' in global_content or '@theme' in global_content)
+            )
+            if not theme_has_tailwind_import and not global_has_tailwind_entry:
+                issues.append(Issue('error', 'src/styles/theme.css',
+                    'Tailwind v4 entry missing: add @import "tailwindcss" to theme.css, or import tailwindcss + theme.css from src/styles/global.css'))
+            for match in re.finditer(r'oklch\(\s*([0-9]+(?:\.[0-9]+)?)\s+', content):
+                try:
+                    lightness = float(match.group(1))
+                except ValueError:
+                    continue
+                if lightness > 1:
+                    issues.append(Issue('error', 'src/styles/theme.css',
+                        f'invalid oklch() lightness {match.group(1)} — use 0–1 fractions or append % for percentage lightness'))
         else:
             issues.append(Issue('error', 'src/styles/theme.css', f'missing file: {theme_css}'))
 
@@ -378,10 +778,93 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
     if check_layout:
         if base_layout.exists():
             content = base_layout.read_text()
-            if 'global.css' not in content:
-                issues.append(Issue('warning', 'src/layouts/BaseLayout.astro', 'BaseLayout does not appear to import global.css'))
+            if 'styles/global.css' not in content and 'styles/theme.css' not in content:
+                issues.append(Issue('error', 'src/layouts/BaseLayout.astro',
+                    'BaseLayout must import the Tailwind CSS entry from src/styles/global.css or src/styles/theme.css'))
         else:
             issues.append(Issue('error', 'src/layouts/BaseLayout.astro', f'missing file: {base_layout}'))
+
+    package_json = project_root / 'package.json'
+    if package_json.exists():
+        try:
+            package_data = json.loads(package_json.read_text())
+        except json.JSONDecodeError as exc:
+            issues.append(Issue('error', 'package.json', f'invalid JSON: {exc}'))
+            package_data = {}
+        deps = {**package_data.get('dependencies', {}), **package_data.get('devDependencies', {})}
+        has_tina = '@tinacms/astro' in deps or 'tinacms' in deps
+        if has_tina:
+            tina_config = project_root / 'tina/config.ts'
+            astro_config = project_root / 'astro.config.mjs'
+            island_route = project_root / 'src/pages/tina-island/[name].ts'
+            api_route = project_root / 'src/pages/api/tina/[...routes].ts'
+            if not tina_config.exists():
+                issues.append(Issue('error', 'tina/config.ts', 'TinaCMS dependency present but tina/config.ts is missing'))
+            else:
+                tina_content = tina_config.read_text()
+                if 'contentApiUrlOverride' not in tina_content:
+                    issues.append(Issue('error', 'tina/config.ts', 'self-hosted TinaCMS config must set contentApiUrlOverride'))
+                if 'LocalAuthProvider' in tina_content:
+                    issues.append(Issue('error', 'tina/config.ts', 'LocalAuthProvider is not allowed in production astro-static; use the PasswordAuthProvider contract'))
+                if 'authProvider' not in tina_content or 'PasswordAuthProvider' not in tina_content:
+                    issues.append(Issue('error', 'tina/config.ts', 'self-hosted TinaCMS config must set authProvider with PasswordAuthProvider'))
+                if 'router:' not in tina_content:
+                    issues.append(Issue('error', 'tina/config.ts', 'maximum TinaCMS visual editing requires collection ui.router entries that open the live preview route'))
+                # Check build config — publicFolder must be "." so admin SPA
+                # lands at ./admin/ (project root), not inside dist/client/
+                # which gets wiped by astro build.
+                if 'publicFolder' in tina_content and 'dist/client' in tina_content:
+                    issues.append(Issue('error', 'tina/config.ts', 'build.publicFolder must be "." not "dist/client" — admin SPA must live at project root to survive astro build'))
+                # Check that collection paths match Astro content directories
+                tina_paths = re.findall(r'path:\s*["\']src/content/(\w+)["\']', tina_content)
+                for tina_path in tina_paths:
+                    content_dir = project_root / 'src' / 'content' / tina_path
+                    if not content_dir.exists():
+                        issues.append(Issue('error', 'tina/config.ts', f'TinaCMS collection path "src/content/{tina_path}" does not exist — directory missing'))
+            if not astro_config.exists():
+                issues.append(Issue('error', 'astro.config.mjs', 'TinaCMS dependency present but astro.config.mjs is missing'))
+            else:
+                astro_content = astro_config.read_text()
+                for needle, label in [
+                    ('@tinacms/astro/integration', 'Tina Astro integration'),
+                    ('@tinacms/astro/vite', 'Tina admin dev redirect'),
+                    ('@astrojs/node', 'Astro Node adapter'),
+                    ('tina()', 'tina() integration call'),
+                ]:
+                    if needle not in astro_content:
+                        issues.append(Issue('error', 'astro.config.mjs', f'missing {label}'))
+            if not island_route.exists():
+                issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'missing Tina visual editing island route'))
+            if not api_route.exists():
+                issues.append(Issue('error', 'src/pages/api/tina/[...routes].ts', 'missing Tina self-hosted GraphQL route'))
+            else:
+                api_content = api_route.read_text()
+                required_route_markers = [
+                    ('POST /api/tina/login', '/api/tina/login'),
+                    ('POST /api/tina/logout', '/api/tina/logout'),
+                    ('GET /api/tina/auth-check', '/api/tina/auth-check'),
+                    ('tina_admin_session cookie', 'tina_admin_session'),
+                    ('PasswordBackendAuthProvider', 'PasswordBackendAuthProvider'),
+                ]
+                for label, marker in required_route_markers:
+                    if marker not in api_content:
+                        issues.append(Issue('error', 'src/pages/api/tina/[...routes].ts', f'missing Tina password auth backend contract: {label}'))
+            project_source_files = []
+            source_texts = []
+            src_root = project_root / 'src'
+            if src_root.exists():
+                project_source_files = source_files(src_root)
+                for source_path in project_source_files:
+                    try:
+                        source_texts.append(source_path.read_text())
+                    except UnicodeDecodeError:
+                        continue
+            all_source = '\n'.join(source_texts)
+            if 'requestWithMetadata' not in all_source:
+                issues.append(Issue('error', 'src/lib/tina', 'maximum TinaCMS visual editing requires requestWithMetadata() data loaders'))
+            if 'tinaField' not in all_source or 'data-tina-field' not in all_source:
+                issues.append(Issue('error', 'src/components', 'maximum TinaCMS visual editing requires tinaField() + data-tina-field click-to-edit markers on visible editable DOM nodes'))
+            validate_tina_editable_surfaces(project_root, project_source_files, issues)
 
     # Check that gallery/content pages reference images or have fallback
     gallery_page = project_root / 'src/pages/galerie.astro'

@@ -25,15 +25,19 @@
 # Multi-site routing:
 #   DOMAIN=example.com  → each project served at <PROJECT_NAME>.example.com
 #                         (override per project with PROJECT_HOST=sub.example.com)
-#   DOMAIN=auto         → each project gets its own port on the public IP;
-#                         first project :80, subsequent :8081, :8082, ...
-#                         (override per project with PROJECT_PORT=8090)
+#   DOMAIN=auto/none    → public IP: sslip.io magic DNS (<PROJECT>.<IP>.sslip.io),
+#                         all projects share :80 via Caddy vhost routing.
+#                         Private IP: port-based routing (first :80, then 8081+).
+#                         (override per project with PROJECT_HOST or PROJECT_PORT)
 #   SITE_URL is emitted in PIPELINE_RESULT so the control node knows the URL.
+#   sslip.io URLs look like real domains — changing to a real domain later is
+#   a one-line Caddy fragment edit (replace the hostname).
 #
 # =============================================================================
 
 set -euo pipefail
 IFS=$'\n\t'
+umask 077
 export DEBIAN_FRONTEND=noninteractive
 
 # --- Apt lock helper ---
@@ -130,7 +134,7 @@ STATE_DIR="/var/lib/site-pipeline"
 BOOTSTRAP_MARKER="${STATE_DIR}/bootstrapped"
 PROJECT_STATE_DIR="${STATE_DIR}/projects"
 PROJECT_MARKER="${PROJECT_STATE_DIR}/${PROJECT_NAME}"
-RESULT_PATH="/tmp/pipeline-result.json"
+RESULT_PATH="${STATE_DIR}/pipeline-result.json"
 
 # --- Helpers ---
 log()  { echo "[OK] $*"; }
@@ -188,6 +192,7 @@ _ensure_result_and_perms() {
       --arg gitea_user "$_GITEA_ADMIN_USER" \
       --arg gitea_repo_url "$GITEA_REPO_URL" \
       --arg gitea_repo_ssh "$GITEA_REPO_SSH" \
+      --arg tina_admin_password "${TINA_ADMIN_PASSWORD:-}" \
       --arg node_version "$NODE_VERSION" \
       --arg bun_version "$BUN_VERSION" \
       --arg system_bootstrapped "$SYSTEM_BOOTSTRAPPED" \
@@ -207,6 +212,7 @@ _ensure_result_and_perms() {
         gitea_user: $gitea_user,
         gitea_repo_url: $gitea_repo_url,
         gitea_repo_ssh: $gitea_repo_ssh,
+        tina_admin_password: $tina_admin_password,
         node_version: $node_version,
         bun_version: $bun_version,
         system_bootstrapped: $system_bootstrapped,
@@ -214,7 +220,7 @@ _ensure_result_and_perms() {
         generated_at: $generated_at,
         trap_generated: true
       }' > "$RESULT_PATH" 2>/dev/null || true
-    chmod 0644 "$RESULT_PATH" 2>/dev/null || true
+    chmod 0600 "$RESULT_PATH" 2>/dev/null || true
     warn "EXIT trap wrote result JSON (exit_code=$exit_code)"
   fi
 }
@@ -239,54 +245,74 @@ fi
 # Backwards-compat: if SITE_SUBDOMAIN was set and PROJECT_HOST was not,
 # honor the old single-site behavior (SITE_SUBDOMAIN.DOMAIN).
 
-# DOMAIN=none is treated identically to DOMAIN=auto: no public hostname, no
-# TLS, plain-IP routing. The brief schema accepts "none" as a sentinel for
-# "this site has no DNS yet"; we use the same auto-port assignment so a fresh
-# bootstrap on `none` doesn't try to obtain a Let's Encrypt cert for a
-# nonexistent host.
+# DOMAIN=none is treated identically to DOMAIN=auto: no DNS owned, but we
+# still want a proper hostname. For publicly routable IPs we use sslip.io
+# magic DNS (<PROJECT>.<IP>.sslip.io → <IP>) so Caddy can do vhost routing
+# on a shared :80 instead of per-project ports. For private IPs (RFC 1918,
+# loopback, link-local) we fall back to port-based routing since sslip.io
+# can't resolve private addresses from the public internet.
+_is_public_ip() {
+  local ip="$1"
+  # RFC 1918, loopback, link-local, carrier-grade NAT, documentation, benchmark
+  [[ "$ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|169\.254\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|198\.51\.100\.|198\.1[89]\.) ]] && return 1
+  return 0
+}
+
 if [[ "$DOMAIN" == "auto" || "$DOMAIN" == "none" ]]; then
-  USE_TLS=false
-  GIT_HOST="${SERVER_IP}:3000"
+  USE_TLS=true
 
-  # --- Port assignment for plain-IP mode ---
-  EXISTING_FRAGMENT="/etc/caddy/sites/${PROJECT_NAME}.caddy"
-  if [[ -z "$PROJECT_PORT" && -f "$EXISTING_FRAGMENT" ]]; then
-    # Reuse port from existing fragment (idempotent re-run)
-    PROJECT_PORT=$(grep -oE '^:[0-9]+' "$EXISTING_FRAGMENT" | head -1 | tr -d ':')
-  fi
-  if [[ -z "$PROJECT_PORT" ]]; then
-    # Collect ports claimed by other project fragments (exclude our own + _shared)
-    USED_PORTS=$(
-      shopt -s nullglob
-      for f in /etc/caddy/sites/*.caddy; do
-        base=$(basename "$f" .caddy)
-        [[ "$base" == "${PROJECT_NAME}" ]] && continue
-        [[ "$base" == _* ]] && continue
-        grep -oE '^:[0-9]+' "$f" 2>/dev/null | tr -d ':'
-      done | sort -un
-    )
-    port_free() { ! echo "$USED_PORTS" | grep -qx "$1"; }
-    if port_free 80; then
-      PROJECT_PORT=80
-    else
-      for candidate in $(seq 8081 8099); do
-        if port_free "$candidate"; then
-          PROJECT_PORT="$candidate"
-          break
-        fi
-      done
-      [[ -z "$PROJECT_PORT" ]] && { err "No free port in 8081-8099 for plain-IP mode"; exit 1; }
-    fi
-  fi
-
-  SITE_PORT="$PROJECT_PORT"
-  SITE_HOST="$SERVER_IP"
-  if [[ "$SITE_PORT" == "80" ]]; then
-    SITE_URL="http://${SERVER_IP}"
-    # Note: legacy.caddy removal is deferred to Phase 10 (after Phase 4 may
-    # create it via Caddyfile migration). Removing it here is too early.
+  if _is_public_ip "$SERVER_IP"; then
+    # sslip.io free dynamic DNS: <anything>.<IP>.sslip.io resolves to <IP>.
+    # Gives us a proper DNS hostname for Caddy vhost routing without owning
+    # a domain. When a real domain is acquired later, swapping the hostname
+    # in the Caddy fragment is a one-line change.
+    SITE_HOST="${PROJECT_NAME}.${SERVER_IP}.sslip.io"
+    SITE_PORT=""   # vhost routing — Caddy auto-TLS on :443
+    SITE_URL="https://${SITE_HOST}"
+    GIT_HOST="git.${SERVER_IP}.sslip.io"
+    GITEA_PROXIED=true     # Caddy reverse-proxies Gitea, app.ini uses hostname
   else
-    SITE_URL="http://${SERVER_IP}:${SITE_PORT}"
+    GIT_HOST="${SERVER_IP}:3000"
+    # Private IP — sslip.io can't resolve this externally. Fall back to
+    # port-based routing (first project :80, subsequent :8081..:8099).
+    # --- Port assignment for plain-IP mode ---
+    EXISTING_FRAGMENT="/etc/caddy/sites/${PROJECT_NAME}.caddy"
+    if [[ -z "$PROJECT_PORT" && -f "$EXISTING_FRAGMENT" ]]; then
+      # Reuse port from existing fragment (idempotent re-run)
+      PROJECT_PORT=$(grep -oE '^:[0-9]+' "$EXISTING_FRAGMENT" | head -1 | tr -d ':')
+    fi
+    if [[ -z "$PROJECT_PORT" ]]; then
+      # Collect ports claimed by other project fragments (exclude our own + _shared)
+      USED_PORTS=$(
+        shopt -s nullglob
+        for f in /etc/caddy/sites/*.caddy; do
+          base=$(basename "$f" .caddy)
+          [[ "$base" == "${PROJECT_NAME}" ]] && continue
+          [[ "$base" == _* ]] && continue
+          grep -oE '^:[0-9]+' "$f" 2>/dev/null | tr -d ':'
+        done | sort -un
+      )
+      port_free() { ! echo "$USED_PORTS" | grep -qx "$1"; }
+      if port_free 80; then
+        PROJECT_PORT=80
+      else
+        for candidate in $(seq 8081 8099); do
+          if port_free "$candidate"; then
+            PROJECT_PORT="$candidate"
+            break
+          fi
+        done
+        [[ -z "$PROJECT_PORT" ]] && { err "No free port in 8081-8099 for plain-IP mode"; exit 1; }
+      fi
+    fi
+
+    SITE_PORT="$PROJECT_PORT"
+    SITE_HOST="$SERVER_IP"
+    if [[ "$SITE_PORT" == "80" ]]; then
+      SITE_URL="http://${SERVER_IP}"
+    else
+      SITE_URL="http://${SERVER_IP}:${SITE_PORT}"
+    fi
   fi
 
 else
@@ -335,6 +361,8 @@ if [[ -z "$ASTRO_SSR_PORT" ]]; then
 fi
 if [[ "$USE_TLS" == "true" ]]; then
   GITEA_PUBLIC_URL="https://${GIT_HOST}"
+elif [[ "${GITEA_PROXIED:-false}" == "true" ]]; then
+  GITEA_PUBLIC_URL="http://${GIT_HOST}"
 else
   GITEA_PUBLIC_URL="http://${SERVER_IP}:3000"
 fi
@@ -439,13 +467,10 @@ if $SYSTEM_NEEDED && [[ "$HARDENING_SKIP" != "true" ]]; then
       SSH_PUBKEY_OK=true
     fi
   else
-    # No SUDO_USER: bootstrap likely running directly as root (e.g. cloud-init).
-    # Verify root's authorized_keys instead. Operators using root directly are
-    # responsible for their own key hygiene.
-    if [[ -f /root/.ssh/authorized_keys ]] \
-       && grep -qE '^[[:space:]]*[^#[:space:]]' /root/.ssh/authorized_keys 2>/dev/null; then
-      SSH_PUBKEY_OK=true
-    fi
+    # Direct root invocation has no verified non-root deploy user. Do not use
+    # root's authorized_keys as proof, because this drop-in disables root login.
+    # Skipping SSH hardening here is safer than locking out the operator.
+    SSH_PUBKEY_OK=false
   fi
 
   if $SSH_PUBKEY_OK; then
@@ -601,13 +626,6 @@ port       = ssh
 maxretry   = 3
 bantime    = 6h
 findtime   = 5m
-
-[sshd-ddos]
-enabled    = true
-port       = ssh
-maxretry   = 6
-bantime    = 2h
-findtime   = 1m
 
 [recidive]
 # Long-tail jail: any source that gets banned 5 times within 24h gets a
@@ -816,6 +834,9 @@ if $SYSTEM_NEEDED; then
   if [[ "$USE_TLS" == true ]]; then
     GITEA_ROOT_URL="https://${GIT_HOST}/"
     GITEA_DOMAIN="${GIT_HOST}"
+  elif [[ "${GITEA_PROXIED:-false}" == "true" ]]; then
+    GITEA_ROOT_URL="http://${GIT_HOST}/"
+    GITEA_DOMAIN="${GIT_HOST}"
   else
     GITEA_ROOT_URL="http://${SERVER_IP}:3000/"
     GITEA_DOMAIN="${SERVER_IP}"
@@ -952,17 +973,27 @@ CEOF
 
   # Ensure a global git.* site fragment exists (shared across all projects)
   if [[ ! -f /etc/caddy/sites/_gitea.caddy ]]; then
-    if [[ "$USE_TLS" == true ]]; then
-      cat > /etc/caddy/sites/_gitea.caddy << CEOF
+    if [[ "$USE_TLS" == true || "${GITEA_PROXIED:-false}" == "true" ]]; then
+      if [[ "$USE_TLS" == true ]]; then
+        cat > /etc/caddy/sites/_gitea.caddy << CEOF
 ${GIT_HOST} {
     reverse_proxy 127.0.0.1:3000
 }
 CEOF
+      else
+        # sslip.io without TLS — prefix http:// to prevent Caddy auto-HTTPS
+        cat > /etc/caddy/sites/_gitea.caddy << CEOF
+http://${GIT_HOST} {
+    reverse_proxy 127.0.0.1:3000
+}
+CEOF
+      fi
     else
-      # Plain-IP mode — Caddy can't host git.IP; Gitea listens on :3000 directly
+      # Raw IP, direct access — Gitea listens on :3000 directly
       cat > /etc/caddy/sites/_gitea.caddy << 'CEOF'
-# Gitea runs on :3000 directly in plain-IP mode.
-# Add a reverse_proxy block here once a real domain is configured.
+# Gitea runs on :3000 directly in plain-IP mode (private IP, no DNS).
+# When upgrading to a public IP or domain, replace with:
+#   git.<IP>.sslip.io { reverse_proxy 127.0.0.1:3000 }
 CEOF
     fi
   fi
@@ -1081,7 +1112,9 @@ inotifywait -m -r -e modify,create,delete,move src/content src/assets public 2>/
     TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     UNIT="astro-ssr-$(basename "$SITE_DIR")"
     echo "=== $TS build start ===" >> "$BUILD_LOG"
-    if bun run check >> "$BUILD_LOG" 2>&1 && bun run build >> "$BUILD_LOG" 2>&1; then
+    if NODE_OPTIONS="--max-old-space-size=1800" bun run check >> "$BUILD_LOG" 2>&1 && NODE_OPTIONS="--max-old-space-size=1800" bun run build >> "$BUILD_LOG" 2>&1; then
+      # Copy bridge.js to admin/ (same as site-build)
+      [[ -f "$SITE_DIR/dist/client/admin/bridge.js" ]] && cp "$SITE_DIR/dist/client/admin/bridge.js" "$SITE_DIR/admin/bridge.js"
       if [[ -f "$SITE_DIR/dist/server/entry.mjs" ]]; then
         if sudo -n systemctl restart "$UNIT" >> "$BUILD_LOG" 2>&1; then
           echo "[git-sync-watch] $TS — restarted $UNIT" >&2
@@ -1126,8 +1159,23 @@ git pull origin main --quiet 2>/dev/null || true
 # bun install + check + build — 3-5x faster cold install than npm; package.json
 # scripts still point at Astro/Tina commands, so this keeps behavior centralized.
 bun install --silent
-bun run check
-bun run build
+# TinaCMS generated types are heavy — increase Node heap from 1.5GB default to 1.8GB
+# to avoid OOM on 2GB VPS. VPS has 2GB RAM + 2GB swap.
+NODE_OPTIONS="--max-old-space-size=1800" bun run check
+NODE_OPTIONS="--max-old-space-size=1800" bun run build
+
+# Copy TinaCMS bridge.js from dist/client/admin/ to project root admin/
+# The @tinacms/astro integration copies bridge.js to dist/client/admin/ during
+# 'astro build' (resolved from @tinacms/bridge — a 15KB bundled runtime), but
+# Caddy serves /admin/* from $SITE_DIR/admin/ (project root).
+# Without this copy, the bridge script 404s and visual editing never loads.
+# Note: the bridge.js in dist/client/admin/ is the correct bundled version
+# (resolved by the integration via require.resolve('@tinacms/bridge')).
+if [[ -f "$SITE_DIR/dist/client/admin/bridge.js" ]]; then
+  cp "$SITE_DIR/dist/client/admin/bridge.js" "$SITE_DIR/admin/bridge.js"
+  echo "[build] Copied bridge.js to admin/"
+fi
+
 if [[ -f "$SITE_DIR/dist/server/entry.mjs" ]]; then
   sudo -n systemctl restart "$UNIT"
   echo "[build] Restarted $UNIT"
@@ -1159,7 +1207,8 @@ if systemctl is-active --quiet gitea 2>/dev/null; then
     sudo -u git GITEA_WORK_DIR=/var/lib/gitea /usr/local/bin/gitea \
       -c /etc/gitea/app.ini admin user change-password \
       --username "$GITEA_ADMIN_USER" \
-      --password "$GITEA_ADMIN_PASS" 2>/dev/null \
+      --password "$GITEA_ADMIN_PASS" \
+      --must-change-password=false 2>/dev/null \
       && warn "Updated password for existing ${GITEA_ADMIN_USER}" \
       || {
         # User probably doesn't exist — create it
@@ -1207,11 +1256,12 @@ if ! $PROJECT_ALREADY_SCAFFOLDED; then
   "private": true,
   "scripts": {
     "dev": "if [ -f tina/config.ts ]; then tinacms dev -c \"astro dev --host 0.0.0.0\"; else astro dev --host 0.0.0.0; fi",
-    "build": "if [ -f tina/config.ts ]; then tinacms build --local --skip-cloud-checks; fi && astro build",
+    "build": "astro build",
     "preview": "astro preview --host 0.0.0.0",
     "check": "astro check",
     "astro:dev": "astro dev --host 0.0.0.0",
-    "astro:build": "astro build"
+    "astro:build": "astro build",
+    "tinacms:build": "tinacms build --local --skip-cloud-checks"
   },
   "dependencies": {
     "astro": "^6.4.8",
@@ -1226,6 +1276,7 @@ if ! $PROJECT_ALREADY_SCAFFOLDED; then
     "react-dom": "^19.2.7",
     "sharp": "^0.35.2",
     "sqlite-level": "^2.1.1",
+    "memory-level": "^1.0.0",
     "tinacms": "^3.9.3",
     "typescript": "^6.0.3"
   },
@@ -1354,23 +1405,40 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 </BaseLayout>
 PAGE
 
-  mkdir -p src/content/pages
+  mkdir -p src/content/pages src/content/settings
   cat > src/content.config.ts << 'TS'
 import { defineCollection, z } from "astro:content";
 import { glob } from "astro/loaders";
+
 const pages = defineCollection({
-  loader: glob({ pattern: "**/*.mdx", base: "./src/content/pages" }),
+  loader: glob({ pattern: "**/*.{md,mdx}", base: "./src/content/pages" }),
   schema: z.object({
     title: z.string(),
     description: z.string().optional(),
     image: z.string().optional(),
   }),
 });
-export const collections = { pages };
+
+const settings = defineCollection({
+  loader: glob({ pattern: "*.json", base: "./src/content/settings" }),
+  schema: z.object({
+    siteName: z.string(),
+    tagline: z.string().optional(),
+    nav: z.array(z.object({ label: z.string(), href: z.string() })).optional(),
+    footerLinks: z.array(z.object({ label: z.string(), href: z.string() })).optional(),
+    contactEmail: z.string().optional(),
+    copyrightText: z.string().optional(),
+  }),
+});
+
+export const collections = { pages, settings };
 TS
 
-  # Seed a placeholder content entry so the glob loader finds something
-  cat > src/content/pages/welcome.mdx << 'MD'
+  # Seed a placeholder content entry so the glob loader finds something.
+  # Use .md (not .mdx) — TinaCMS defaults to .md extension for collections.
+  # Using .mdx causes "Invalid file extension: expected '.md' but got '.mdx'"
+  # when TinaCMS tries to read the file.
+  cat > src/content/pages/welcome.md << 'MD'
 ---
 title: Welcome
 description: Placeholder page — agents customize per project
@@ -1379,7 +1447,444 @@ description: Placeholder page — agents customize per project
 This site was scaffolded by the pipeline.
 MD
 
+  # Seed global site settings — editors can edit nav/footer in TinaCMS
+  cat > src/content/settings/site.json << 'JSON'
+{
+  "siteName": "Site Name",
+  "tagline": "Placeholder tagline — agents customize per project",
+  "nav": [
+    { "label": "Home", "href": "/" }
+  ],
+  "footerLinks": [
+    { "label": "Home", "href": "/" }
+  ],
+  "contactEmail": "info@example.com",
+  "copyrightText": "All rights reserved."
+}
+JSON
+
   mkdir -p src/components/sections src/components/ui src/assets public pipeline
+
+  # TinaCMS scaffold — always create config + routes so tinacms build runs
+  # and /admin/ is available by default. Without tina/config.ts, the build
+  # script skips tinacms build and /admin/ returns 404.
+  mkdir -p tina src/pages/tina-island src/pages/api/tina src/lib/tina
+
+  cat > tina/config.ts << 'TINACONF'
+import { AbstractAuthProvider, defineConfig } from "tinacms";
+
+class PasswordAuthProvider extends AbstractAuthProvider {
+  async authenticate() {
+    if (window.location.pathname !== "/admin/login.html") {
+      window.location.href = "/admin/login.html";
+    }
+    return { access_token: "LOCAL", id_token: "LOCAL", refresh_token: "LOCAL" };
+  }
+  async getUser() {
+    try { return (await fetch("/api/tina/auth-check")).ok; } catch { return false; }
+  }
+  async getToken() { return { id_token: "" }; }
+  async logout() {
+    try { await fetch("/api/tina/logout", { method: "POST" }); } catch {}
+    window.location.href = "/admin/login.html";
+  }
+  async logOut() { return this.logout(); }
+}
+
+export default defineConfig({
+  clientId: null,
+  token: null,
+  authProvider: new PasswordAuthProvider(),
+  contentApiUrlOverride: "/api/tina/gql",
+  build: {
+    outputFolder: "admin",
+    publicFolder: ".",
+  },
+  schema: {
+    collections: [
+      {
+        name: "page",
+        label: "Pages",
+        path: "src/content/pages",
+        ui: { router: ({ document }) => `/${document._sys.filename === "index" ? "" : document._sys.filename}` },
+        fields: [
+          { name: "title", type: "string", required: true },
+          { name: "description", type: "string" },
+        ],
+      },
+      {
+        name: "settings",
+        label: "Site Settings",
+        path: "src/content/settings",
+        format: "json",
+        ui: { router: () => "/" },
+        fields: [
+          { name: "siteName", type: "string", required: true },
+          { name: "tagline", type: "string" },
+          {
+            name: "nav",
+            type: "object",
+            list: true,
+            label: "Navigation Menu",
+            fields: [
+              { name: "label", type: "string", required: true },
+              { name: "href", type: "string", required: true },
+            ],
+          },
+          {
+            name: "footerLinks",
+            type: "object",
+            list: true,
+            fields: [
+              { name: "label", type: "string", required: true },
+              { name: "href", type: "string", required: true },
+            ],
+          },
+          { name: "contactEmail", type: "string" },
+          { name: "copyrightText", type: "string" },
+        ],
+      },
+    ],
+  },
+});
+TINACONF
+
+  cat > 'src/pages/tina-island/[name].ts' << 'TINAISLAND'
+import type { APIRoute } from "astro";
+import { experimental_createIslandRoute } from "@tinacms/astro/experimental";
+
+// Placeholder islands registry — the frontend-builder populates this
+const islands = {} as Record<string, { component: any; wrapper: string }>;
+
+export const prerender = false;
+export const ALL: APIRoute = experimental_createIslandRoute(islands);
+TINAISLAND
+
+  cat > tina/databaseClient.ts << 'TINADB'
+import { createDatabase } from "@tinacms/datalayer";
+import { FilesystemBridge } from "@tinacms/datalayer";
+import { resolve, buildSchema } from "@tinacms/graphql";
+import { MemoryLevel } from "memory-level";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+/**
+ * Production-safe database client for TinaCMS self-hosting on Bun/Node.
+ *
+ * Uses memory-level (pure JS) instead of sqlite-level (native better-sqlite3
+ * which Bun doesn't support). The index is rebuilt on each server start —
+ * fast for small sites.
+ *
+ * Reads the generated _schema.json to avoid importing tina/config.ts at
+ * runtime (which pulls in tinacms -> @heroicons/react/solid, a directory
+ * import that Node ESM doesn't support).
+ */
+
+const database = createDatabase({
+  databaseAdapter: new MemoryLevel(),
+  bridge: new FilesystemBridge(process.cwd()),
+  gitProvider: {
+    onPut: async (key: string, value: string) => {
+      const bridge = new FilesystemBridge(process.cwd());
+      await bridge.put(key, value);
+    },
+    onDelete: async (key: string) => {
+      const bridge = new FilesystemBridge(process.cwd());
+      await bridge.delete(key);
+    },
+  },
+});
+
+let indexed = false;
+let indexingPromise: Promise<void> | null = null;
+
+async function ensureIndexed() {
+  if (indexed) return;
+  if (indexingPromise) return indexingPromise;
+  indexingPromise = (async () => {
+    try {
+      console.log("[TinaCMS] Indexing content into in-memory database...");
+      const schemaPath = join(process.cwd(), "tina", "__generated__", "_schema.json");
+      const schemaJson = JSON.parse(readFileSync(schemaPath, "utf-8"));
+      const { graphQLSchema, tinaSchema } = await buildSchema({ schema: schemaJson } as any);
+      await database.indexContent({ graphQLSchema, tinaSchema });
+      indexed = true;
+      console.log("[TinaCMS] Indexing complete.");
+    } catch (error) {
+      console.error("[TinaCMS] Indexing failed:", error);
+      indexed = false;
+      indexingPromise = null;
+    }
+  })();
+  return indexingPromise;
+}
+
+const databaseClient = {
+  ...database,
+  request: async ({
+    query,
+    variables,
+    user,
+  }: {
+    query: string;
+    variables: Record<string, unknown>;
+    user?: { sub: string } | undefined;
+  }) => {
+    await ensureIndexed();
+    return resolve({
+      query,
+      variables,
+      database,
+      ctxUser: user,
+      verbose: false,
+      silenceErrors: false,
+    });
+  },
+};
+
+export default databaseClient;
+TINADB
+
+  cat > 'src/pages/api/tina/[...routes].ts' << 'TINAAPI'
+import type { APIRoute } from "astro";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { Socket } from "node:net";
+import { IncomingMessage, ServerResponse } from "node:http";
+import { TinaNodeBackend } from "@tinacms/datalayer";
+import databaseClient from "../../../../tina/databaseClient";
+
+export const prerender = false;
+
+const SESSION_COOKIE = "tina_admin_session";
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
+
+function authSecret() {
+  return process.env.TINA_ADMIN_PASSWORD || "";
+}
+
+function signSession(value: string) {
+  return createHmac("sha256", authSecret()).update(value).digest("hex");
+}
+
+function safeEqual(a: string, b: string) {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+function parseCookies(header: string | undefined) {
+  return Object.fromEntries(
+    (header || "").split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
+      const [name, ...rest] = part.split("=");
+      try { return [name, decodeURIComponent(rest.join("="))]; }
+      catch { return [name, rest.join("=")]; }
+    })
+  );
+}
+
+function isSessionValid(cookieHeader: string | undefined) {
+  const secret = authSecret();
+  if (!secret) return false;
+  const raw = parseCookies(cookieHeader)[SESSION_COOKIE];
+  if (!raw) return false;
+  const [issuedAt, signature] = raw.split(".");
+  const issued = Number(issuedAt);
+  if (!Number.isFinite(issued) || !signature) return false;
+  if (Date.now() - issued > SESSION_MAX_AGE_SECONDS * 1000) return false;
+  return safeEqual(signature, signSession(issuedAt));
+}
+
+function sessionCookie(request: Request) {
+  const issuedAt = String(Date.now());
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return `${SESSION_COOKIE}=${encodeURIComponent(`${issuedAt}.${signSession(issuedAt)}`)}; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax${secure}`;
+}
+
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...headers },
+  });
+}
+
+async function readPassword(request: Request) {
+  try {
+    const body = await request.json();
+    return typeof body?.password === "string" ? body.password : "";
+  } catch {
+    return "";
+  }
+}
+
+// Backend auth contract:
+// - POST /api/tina/login sets the HttpOnly tina_admin_session cookie.
+// - POST /api/tina/logout clears the cookie.
+// - GET /api/tina/auth-check lets PasswordAuthProvider decide whether /admin is logged in.
+function PasswordBackendAuthProvider() {
+  return {
+    isAuthorized: async (req: IncomingMessage) => {
+      if (isSessionValid(req.headers.cookie)) return { isAuthorized: true as const };
+      return { isAuthorized: false as const, errorCode: 401, errorMessage: "Unauthorized" };
+    },
+  };
+}
+
+const tinaHandler = TinaNodeBackend({
+  authProvider: PasswordBackendAuthProvider(),
+  databaseClient,
+});
+
+export const ALL: APIRoute = async ({ request }) => {
+  const url = new URL(request.url);
+
+  if (request.method === "POST" && url.pathname === "/api/tina/login") {
+    const expected = authSecret();
+    const provided = await readPassword(request);
+    if (!expected || provided !== expected) return json({ success: false }, 401);
+    return json({ success: true }, 200, { "Set-Cookie": sessionCookie(request) });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/tina/logout") {
+    return json({ success: true }, 200, {
+      "Set-Cookie": `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`,
+    });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tina/auth-check") {
+    const authenticated = isSessionValid(request.headers.get("cookie") || undefined);
+    return json({ authenticated }, authenticated ? 200 : 401);
+  }
+
+  const socket = new Socket();
+  const req = new IncomingMessage(socket);
+  req.method = request.method;
+  req.url = `/api/tina${url.pathname.replace(/^\/api\/tina/, "")}${url.search}`;
+  req.headers = Object.fromEntries(request.headers.entries());
+
+  if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+    const bodyBuffer = Buffer.from(await request.arrayBuffer());
+    req.push(bodyBuffer);
+    const contentType = request.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      try {
+        (req as any).body = JSON.parse(bodyBuffer.toString());
+      } catch {
+        (req as any).body = undefined;
+      }
+    }
+  }
+  req.push(null);
+
+  return new Promise<Response>((resolve) => {
+    const chunks: Buffer[] = [];
+    const res = new ServerResponse(req);
+
+    const originalWrite = res.write.bind(res);
+    res.write = function (chunk: any, ...rest: any[]) {
+      if (typeof chunk === "string") chunks.push(Buffer.from(chunk));
+      else if (Buffer.isBuffer(chunk)) chunks.push(chunk);
+      return originalWrite(chunk, ...rest);
+    } as any;
+
+    const originalEnd = res.end.bind(res);
+    res.end = function (chunk?: any, ...rest: any[]) {
+      if (chunk) {
+        if (typeof chunk === "string") chunks.push(Buffer.from(chunk));
+        else if (Buffer.isBuffer(chunk)) chunks.push(chunk);
+      }
+      const body = Buffer.concat(chunks);
+      const responseHeaders = new Headers();
+      const rawHeaders = res.getHeaders();
+      for (const [k, v] of Object.entries(rawHeaders)) {
+        if (v != null) responseHeaders.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+      }
+      originalEnd(chunk, ...rest);
+      socket.destroy();
+      resolve(
+        new Response(body.length > 0 ? body : null, {
+          status: res.statusCode || 200,
+          headers: responseHeaders,
+        })
+      );
+      return res;
+    } as any;
+
+    tinaHandler(req, res);
+  });
+};
+TINAAPI
+
+  cat > src/lib/tina/data.ts << 'TINADATA'
+import { requestWithMetadata } from "@tinacms/astro/data";
+import { tinaField } from "@tinacms/astro/tina-field";
+export { requestWithMetadata, tinaField };
+TINADATA
+
+  # Placeholder admin/index.html — replaced by Phase 4.2 (local TinaCMS build).
+  # Without this, /admin/ returns 404 until the admin SPA is built and synced.
+  mkdir -p admin
+  cat > admin/index.html << 'ADMINPLACEHOLDER'
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Admin — Pending Build</title></head>
+<body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:0 auto">
+<h1>TinaCMS Admin</h1>
+<p>The admin SPA has not been built yet. It is built locally on the control
+node during Phase 4.2 and published by build-deployer.</p>
+<p>If you see this after deployment, run the TinaCMS local build phase.</p>
+</body>
+</html>
+ADMINPLACEHOLDER
+
+  # Password auth login page — TinaCMS custom backend auth gate.
+  # The admin SPA reads collections without auth; mutations require
+  # a session cookie set by this login form. The TINA_ADMIN_PASSWORD
+  # env var (in /etc/default/astro-ssr-<project>) controls access.
+  cat > admin/login.html << 'LOGINHTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a0a;color:#e5e5e5;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#141414;border:1px solid #2a2a2a;border-radius:12px;padding:2.5rem;width:100%;max-width:380px}
+h1{font-size:1.25rem;margin-bottom:1.5rem;text-align:center;color:#fff}
+input{width:100%;padding:0.75rem 1rem;background:#0a0a0a;border:1px solid #2a2a2a;border-radius:8px;color:#fff;font-size:0.95rem;margin-bottom:1rem}
+input:focus{outline:none;border-color:#4a4a4a}
+button{width:100%;padding:0.75rem;background:#fff;color:#0a0a0a;border:none;border-radius:8px;font-size:0.95rem;font-weight:600;cursor:pointer}
+button:hover{background:#e5e5e5}
+button:disabled{opacity:0.5;cursor:default}
+.error{color:#ef4444;font-size:0.85rem;text-align:center;margin-bottom:1rem;display:none}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Admin Login</h1>
+<div class="error" id="err">Incorrect password. Try again.</div>
+<input type="password" id="pw" placeholder="Password" autofocus>
+<button id="btn" onclick="login()">Login</button>
+</div>
+<script>
+async function login(){
+  const pw=document.getElementById('pw').value;
+  const btn=document.getElementById('btn');
+  const err=document.getElementById('err');
+  btn.disabled=true;btn.textContent='Logging in...';err.style.display='none';
+  try{
+    const r=await fetch('/api/tina/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+    if(r.ok){const d=await r.json();if(d.success){window.location.href='/admin/';return;}}
+    err.style.display='block';
+  }catch(e){err.style.display='block';}
+  btn.disabled=false;btn.textContent='Login';
+}
+document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+</script>
+</body>
+</html>
+LOGINHTML
 
   for S in Hero Gallery Nav Footer Testimonials Contact CTA; do
     cat > "src/components/sections/${S}.astro" << COMP
@@ -1401,12 +1906,22 @@ dist/
 .astro/
 .DS_Store
 pipeline/
+pipeline/vps-connection.json
+pipeline/.git-credentials
+pipeline/bootstrap*.log
+pipeline/bootstrap*.pid
+pipeline/bootstrap*.exit
+pipeline/RESULT.md
+pipeline/HUMAN_REVIEW.md
 .opencode/
 .env
 # Lockfiles are regenerated per-deploy by the auto-rebuild watcher; not part of
 # the source-of-truth repo for this static-site pipeline.
 bun.lockb
 package-lock.json
+# NOTE: admin/ is intentionally NOT ignored — the TinaCMS admin SPA is built
+# locally on the control node and committed to git so the VPS never needs to
+# run tinacms build (which OOMs on 2GB VMs). Do not add admin/ here.
 # NOTE: public/media/ is intentionally NOT ignored — TinaCMS uploads committed
 # editor images there via the Gitea GitProvider. Do not add public/media/ here.
 GI
@@ -1444,9 +1959,10 @@ log "Phase 10/13: Caddy site fragment for ${PROJECT_NAME}"
 # This MUST happen here (not earlier) because Phase 4 may have just created
 # legacy.caddy by migrating the default Caddyfile. If we remove it at the
 # top of the script, Phase 4 recreates it later and the conflict persists.
-# In plain-IP mode with port 80, legacy.caddy's :80 block conflicts with
-# our project's :80 block, causing Caddy to serve the default welcome page.
-if [[ "$SITE_PORT" == "80" && -f /etc/caddy/sites/legacy.caddy ]]; then
+# In plain-IP mode with port 80, legacy.caddy's :80 block would conflict
+# with our project's :80 block, causing Caddy to serve the default welcome
+# page. sslip.io vhost projects don't conflict — Caddy routes by Host header.
+if [[ -n "${SITE_PORT:-}" && "$SITE_PORT" == "80" && -f /etc/caddy/sites/legacy.caddy ]]; then
   rm -f /etc/caddy/sites/legacy.caddy
   warn "Removed legacy.caddy — port 80 now serves ${PROJECT_NAME}"
 fi
@@ -1456,7 +1972,7 @@ if [[ -f "$CADDY_SITE_FILE" && "$FORCE_PROJECT" != "true" ]]; then
   skip "Caddy site fragment exists — preserving: $CADDY_SITE_FILE"
 else
   if [[ "$USE_TLS" == true ]]; then
-    # Vhost-routed: multiple projects coexist, each on its own hostname.
+    # Real-domain vhost routing with automatic TLS via Let's Encrypt.
     cat > "$CADDY_SITE_FILE" << CEOF
 # Site: ${PROJECT_NAME}  (url: ${SITE_URL})
 ${SITE_HOST} {
@@ -1468,7 +1984,13 @@ ${SITE_HOST} {
     handle /api/tina/* {
         reverse_proxy 127.0.0.1:${ASTRO_SSR_PORT}
     }
+    redir /admin /admin/ permanent
+    handle /tina/__generated__/* {
+        root * ${SITE_DIR}
+        file_server
+    }
     handle /admin/* {
+        root * ${SITE_DIR}
         file_server
     }
     handle {
@@ -1476,14 +1998,51 @@ ${SITE_HOST} {
     }
     header {
         X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
+        Content-Security-Policy "frame-ancestors 'self'"
+        -Server
+    }
+}
+CEOF
+  elif [[ -n "$SITE_HOST" && "$SITE_HOST" == *".sslip.io" ]]; then
+    # sslip.io vhost routing: Caddy auto-provisions Let's Encrypt TLS for
+    # the sslip.io hostname (it's a valid DNS name). When a real domain is
+    # acquired, just change SITE_HOST — the Caddy config stays the same.
+    cat > "$CADDY_SITE_FILE" << CEOF
+# Site: ${PROJECT_NAME}  (url: ${SITE_URL})
+# sslip.io temporary hostname — replace with real domain when ready:
+#   sed -i 's/${SITE_HOST}/myproject.example.com/' ${CADDY_SITE_FILE}
+#   systemctl reload caddy
+${SITE_HOST} {
+    root * ${SITE_DIR}/dist/client
+    encode gzip zstd
+    handle /tina-island/* {
+        reverse_proxy 127.0.0.1:${ASTRO_SSR_PORT}
+    }
+    handle /api/tina/* {
+        reverse_proxy 127.0.0.1:${ASTRO_SSR_PORT}
+    }
+    redir /admin /admin/ permanent
+    handle /tina/__generated__/* {
+        root * ${SITE_DIR}
+        file_server
+    }
+    handle /admin/* {
+        root * ${SITE_DIR}
+        file_server
+    }
+    handle {
+        file_server
+    }
+    header {
+        X-Content-Type-Options "nosniff"
+        Content-Security-Policy "frame-ancestors 'self'"
         -Server
     }
 }
 CEOF
   else
-    # Plain-IP mode: each project listens on its own port (SITE_PORT).
-    # Port is auto-assigned or pinned via PROJECT_PORT (see resolve block above).
+    # Plain-IP, port-based routing (private IP fallback).
+    # Each project listens on its own port (SITE_PORT).
     cat > "$CADDY_SITE_FILE" << CEOF
 # Site: ${PROJECT_NAME}  (url: ${SITE_URL})
 :${SITE_PORT} {
@@ -1495,7 +2054,13 @@ CEOF
     handle /api/tina/* {
         reverse_proxy 127.0.0.1:${ASTRO_SSR_PORT}
     }
+    redir /admin /admin/ permanent
+    handle /tina/__generated__/* {
+        root * ${SITE_DIR}
+        file_server
+    }
     handle /admin/* {
+        root * ${SITE_DIR}
         file_server
     }
     handle {
@@ -1503,11 +2068,12 @@ CEOF
     }
     header {
         X-Content-Type-Options "nosniff"
+        Content-Security-Policy "frame-ancestors 'self'"
         -Server
     }
 }
 CEOF
-    # Open the ports in the firewall (idempotent)
+    # Open the per-project port in the firewall (idempotent)
     ufw allow "${SITE_PORT}/tcp" >/dev/null 2>&1 || true
   fi
 fi
@@ -1641,14 +2207,15 @@ if id -u debian >/dev/null 2>&1; then
 fi
 chmod 750 "$TINACMS_DB_DIR" 2>/dev/null || true
 
-EXISTING_TINA_TOKEN=""
-EXISTING_GITEA_API_TOKEN=""
+EXISTING_TINA_ADMIN_PASS=""
 if [[ -f "$ASTRO_SSR_ENV" && "$FORCE_PROJECT" != "true" ]]; then
   EXISTING_TINA_TOKEN=$(grep -E '^TINA_TOKEN=' "$ASTRO_SSR_ENV" 2>/dev/null | head -1 | cut -d= -f2- || true)
   EXISTING_GITEA_API_TOKEN=$(grep -E '^GITEA_API_TOKEN=' "$ASTRO_SSR_ENV" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  EXISTING_TINA_ADMIN_PASS=$(grep -E '^TINA_ADMIN_PASSWORD=' "$ASTRO_SSR_ENV" 2>/dev/null | head -1 | cut -d= -f2- || true)
 fi
 
 TINACMS_AUTH_TOKEN="${EXISTING_TINA_TOKEN:-$(openssl rand -hex 32)}"
+TINA_ADMIN_PASSWORD="${EXISTING_TINA_ADMIN_PASS:-$(openssl rand -base64 12)}"
 TINACMS_GITEA_TOKEN="$EXISTING_GITEA_API_TOKEN"
 if [[ -z "$TINACMS_GITEA_TOKEN" && "${GITEA_AUTH_OK:-false}" == "true" ]]; then
   TOKEN_NAME="tinacms-${PROJECT_NAME}"
@@ -1678,6 +2245,7 @@ TINA_TOKEN=${TINACMS_AUTH_TOKEN}
 TINA_PROJECT_NAME=${PROJECT_NAME}
 TINA_DB_PATH=${TINACMS_DB_PATH}
 TINA_COMMIT_MESSAGE="Edited with TinaCMS"
+TINA_ADMIN_PASSWORD=${TINA_ADMIN_PASSWORD}
 GITEA_HOST=${GITEA_PUBLIC_URL}
 GITEA_OWNER=${GITEA_ADMIN_USER}
 GITEA_REPO=${PROJECT_NAME}
@@ -1752,6 +2320,8 @@ GITEA_REPO_URL="${GITEA_PUBLIC_URL}/${GITEA_ADMIN_USER}/${PROJECT_NAME}.git"
 GITEA_REPO_SSH="ssh://git@${SERVER_IP}/home/git/gitea-repositories/${GITEA_ADMIN_USER}/${PROJECT_NAME}.git"
 
 jq -n   --arg schema_version "astro-static-bootstrap-result/v1"   --arg project_name "$PROJECT_NAME"   --arg server_ip "$SERVER_IP"   --arg domain "$DOMAIN"   --argjson use_tls "$( [[ "$USE_TLS" == "true" ]] && printf 'true' || printf 'false' )"   --arg site_dir "$SITE_DIR"   --arg site_host "$SITE_HOST"   --arg site_port "${SITE_PORT:-}"   --arg site_url "$SITE_URL"   --arg gitea_url "$GITEA_PUBLIC_URL"   --arg gitea_user "$GITEA_ADMIN_USER"   --arg gitea_repo_url "$GITEA_REPO_URL"   --arg gitea_repo_ssh "$GITEA_REPO_SSH"   --arg node_version "$NODE_VERSION"   --arg bun_version "$BUN_VERSION"   --arg system_bootstrapped "$SYSTEM_BOOTSTRAPPED"   --arg system_phases_run "$SYSTEM_PHASES_RUN"   --arg caddy_site_file "$CADDY_SITE_FILE"   --arg astro_ssr_port "$ASTRO_SSR_PORT"   --arg astro_ssr_unit "astro-ssr-${PROJECT_NAME}" \
+  --arg gitea_pass "$GITEA_ADMIN_PASS" \
+  --arg tina_admin_password "$TINA_ADMIN_PASSWORD" \
   --arg generated_at "$GENERATED_AT"   '{
     schema_version: $schema_version,
     project_name: $project_name,
@@ -1764,8 +2334,10 @@ jq -n   --arg schema_version "astro-static-bootstrap-result/v1"   --arg project_
     site_url: $site_url,
     gitea_url: $gitea_url,
     gitea_user: $gitea_user,
+    gitea_pass: $gitea_pass,
     gitea_repo_url: $gitea_repo_url,
     gitea_repo_ssh: $gitea_repo_ssh,
+    tina_admin_password: $tina_admin_password,
     node_version: $node_version,
     bun_version: $bun_version,
     system_bootstrapped: $system_bootstrapped,
@@ -1775,7 +2347,7 @@ jq -n   --arg schema_version "astro-static-bootstrap-result/v1"   --arg project_
     astro_ssr_unit: $astro_ssr_unit,
     generated_at: $generated_at
   }' > "$RESULT_PATH"
-chmod 0644 "$RESULT_PATH"
+chmod 0600 "$RESULT_PATH"
 
 cat << RESULT
 ===PIPELINE_RESULT===

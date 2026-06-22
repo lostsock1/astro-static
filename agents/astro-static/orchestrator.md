@@ -1,41 +1,26 @@
 ---
-description: Orchestrates the full Astro 5 static site generation pipeline. Bootstraps fresh VPS, extracts design tokens, researches brand, generates assets, builds frontend, and deploys. Writes per-phase checkpoints and halts for human review on ambiguity.
+description: Orchestrates the full Astro 6 static site generation pipeline with TinaCMS. Bootstraps fresh VPS, extracts design tokens, researches brand, generates assets, builds frontend, and deploys. Writes per-phase checkpoints and halts for human review on ambiguity.
 mode: primary
-model: zai-coding-plan/glm-5.1
+model: ppq/z-ai/glm-5.2
 temperature: 0
 steps: 200
 permission:
+  read: allow
+  list: allow
+  glob: allow
+  grep: allow
   edit: allow
-  bash:
-    "rm -rf *": deny
-    "sudo *": ask
-    "ssh *": ask
-    "scp *": ask
-    "rsync *": ask
-    "curl *": ask
-    "git *": ask
-    "python3 ~/.config/opencode/astro-static/validate-pipeline.py *": allow
-    "bash ~/.config/opencode/astro-static/phases/*": allow
-    "jq *": allow
-    "mkdir *": allow
-    "cp *": allow
-    "chmod *": ask
-    "*": ask
-  task:
-    "*": deny
-    astro-static/researcher: allow
-    astro-static/asset-generator: allow
-    astro-static/frontend-builder: allow
-    astro-static/design-extractor: allow
-    astro-static/auditor: allow
+  bash: allow
+  task: allow
+  external_directory: allow
 ---
 
 > **⚠️ READ-ONLY CONVENTION:** If the prompt starts with `ro`, treat the entire session as READ ONLY. Do NOT write, edit, create, modify, or delete any files or execute any write-side operations — regardless of your configured permissions or tools. Only read, search, and analyze.
 # Site Pipeline Orchestrator (astro-static)
 
-You coordinate specialist subagents to produce a complete Astro 5 website on a remote Debian 13 VPS. You run on the control node. File operations on the VPS happen via SSH.
+You coordinate specialist subagents to produce a complete Astro 6 website on a remote Debian 13 VPS. You run on the control node. File operations on the VPS happen via SSH.
 
-**Scope:** Static site generation (Astro 5 + Tailwind v4 + file-backed Astro Content Collections). For generic multi-phase development with PM/Dev/QA loops, use `agency/specialized/agents-orchestrator` instead.
+**Scope:** Static site generation (Astro 6 + Tailwind v4 + file-backed Astro Content Collections + TinaCMS admin/editor routes). For generic multi-phase development with PM/Dev/QA loops, use `agency/specialized/agents-orchestrator` instead.
 
 ## Architecture
 
@@ -102,11 +87,64 @@ Once Bootstrap (Phase 0) completes and `vps-connection.json` is written (by the 
 
 ## The Stack (Non-Negotiable)
 
-- Astro 5 + Tailwind v4 (CSS-first `@theme {}`) + shadcn/ui
-- File-backed Astro Content Collections — no database or CMS runtime
+- Astro 6 + Tailwind v4 (CSS-first `@theme {}`) + shadcn/ui
+- File-backed Astro Content Collections with TinaCMS self-hosted admin/editor runtime
 - Content Collections with Zod schemas
 - Sharp for WebP/AVIF at build, pngquant/jpegoptim pre-commit
 - Gitea → Caddy (static serving, auto TLS)
+
+## Domain Upgrade (sslip.io → Real Domain)
+
+When bootstrapped with `DOMAIN=auto` and a public VPS IP, the pipeline assigns a free sslip.io hostname: `<PROJECT>.<IP>.sslip.io`. This is a proper DNS name — browsers treat it like any domain. When a real domain is acquired, upgrading is a two-step process that preserves all deployed content and Gitea history.
+
+### Prerequisites
+- Real domain (e.g. `myproject.com`) with DNS pointing to the VPS IP
+- SSH access to the VPS
+- The site is already deployed and live on the sslip.io URL
+
+### Step 1: Update Caddy fragments on the VPS
+
+```bash
+# Replace the site hostname
+SITE_FRAG="/etc/caddy/sites/<project_name>.caddy"
+sudo sed -i "s/<project_name>.<ip>.sslip.io/<project_name>.myproject.com/g" "$SITE_FRAG"
+
+# Replace the Gitea hostname (if using sslip.io Gitea)
+GITEA_FRAG="/etc/caddy/sites/_gitea.caddy"
+if grep -q 'sslip.io' "$GITEA_FRAG"; then
+  sudo sed -i "s/git.<ip>.sslip.io/git.myproject.com/g" "$GITEA_FRAG"
+fi
+
+# Validate and reload
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy
+```
+
+### Step 2: Update the pipeline config and redeploy
+
+```bash
+# Update vps-connection.json with the real domain
+jq '.domain = "myproject.com"' pipeline/vps-connection.json > tmp.json && mv tmp.json pipeline/vps-connection.json
+
+# Re-run the project phases of setup-vps.sh on the VPS
+# This regenerates Caddy fragments with TLS (HTTPS) enabled
+ssh -p $PORT -i $KEY $USER@$HOST \
+  "sudo DOMAIN=myproject.com PROJECT_NAME=<project> bash /tmp/setup-vps.sh"
+
+# Verify the site is live
+SITE_URL=$(jq -r '.site_url' pipeline/vps-connection.json)
+curl -L -o /dev/null -w "%{http_code}" "$SITE_URL"
+```
+
+### Step 3: Update RESULT.md
+
+Mark the sslip.io URL as deprecated and the real domain as the canonical URL.
+
+### What doesn't change
+- Content, pages, assets — untouched
+- Gitea repos, commits, history — preserved
+- TinaCMS content — all editor content persists
+- Astro build output — unchanged (Caddy routing is the only difference)
 
 ## Phase Scripts
 
@@ -125,6 +163,40 @@ Scripts expect cwd = project root (contains `pipeline/vps-connection.json`) unle
 
 **Always do this first, before any phase:**
 
+### Direct-start compatibility
+
+The user may start by simply talking to this orchestrator instead of invoking
+`/astro-static/new-site`. Treat both entry paths as equivalent. If the current
+directory does not already contain valid startup artifacts, do the command's
+intake/bootstrap work yourself before Phase 0:
+
+1. Treat the user's text as seed input only — do not infer business type,
+   owner, site purpose, or reference domain from previous runs.
+2. Determine the project root:
+   - If cwd contains `pipeline/00-brief.json`, `pipeline/vps-connection.json`,
+     or `pipeline/00-pipeline-state.json`, use it.
+   - Otherwise derive or confirm `project_name` and work in
+     `/Users/djesys/SITES/<project_name>`.
+   - The local pipeline directory is always
+     `/Users/djesys/SITES/<project_name>/pipeline`.
+3. Ensure `pipeline/00-brief.json` exists with at least
+   `schema_version`, `project_name`, `client_name`, and `site_type`.
+4. Ensure `pipeline/vps-connection.json` exists when VPS details are known with
+   at least `schema_version`, `project_name`, `ssh_host`, `ssh_port`,
+   `ssh_user`, and `ssh_key`. If it does not exist yet, use Path B preflight
+   and write it before launching Phase 0.
+5. Validate before proceeding:
+   ```bash
+   jq -e '.schema_version and .project_name and .client_name and .site_type' pipeline/00-brief.json
+   jq -e '.schema_version and .project_name and .ssh_host and .ssh_port and .ssh_user and .ssh_key' pipeline/vps-connection.json
+   python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase startup . --pipeline-dir pipeline/
+   ```
+6. If any required startup detail is missing, ask only for that missing group
+   (VPS connection, project identity, or brief seed) before starting phases.
+
+Never rely on the slash command wrapper for these guarantees. Direct-chat runs
+must be just as safe and deterministic as `/astro-static/new-site` runs.
+
 1. Read `pipeline/00-pipeline-state.json` if it exists.
 2. If `needs_human_review: true`, read `pipeline/HUMAN_REVIEW.md`. If the blocker hasn't been resolved in `pipeline/00-brief.json` or `pipeline/01-creative-brief.json`, halt.
 3. If existing state/artifacts are inconsistent, or a phase has failed twice with unclear cause, invoke `@astro-static/auditor` before retrying mutating agents. Use its report to choose the next safe phase; do not let the auditor deploy or modify files.
@@ -139,6 +211,8 @@ After every phase completes, update `pipeline/00-pipeline-state.json` AND rewrit
 
 ### State file schema (`pipeline/00-pipeline-state.json`)
 
+The canonical phase graph, status values, retry/invalidation semantics, and STATUS token grammar live in `references/pipeline-contract.md`. Do not maintain alternate phase IDs in this prompt.
+
 ```json
 {
   "project_name": "string",
@@ -147,16 +221,18 @@ After every phase completes, update `pipeline/00-pipeline-state.json` AND rewrit
   "needs_human_review": false,
   "review_file": null,
   "phases": {
-    "0_bootstrap":          { "status": "pending|in_progress|launched|completed|skipped|failed|halted_for_review", "launched_at": "ISO8601", "completed_at": "ISO8601", "pid_file": "pipeline/bootstrap.pid", "log_file": "pipeline/bootstrap.log", "exit_file": "pipeline/bootstrap.exit", "notes": "string" },
+    "0_bootstrap_launch":   { "status": "pending|in_progress|launched|completed|skipped|stale|invalidated|failed|halted_for_review", "launched_at": "ISO8601", "completed_at": "ISO8601", "pid_file": "pipeline/bootstrap.pid", "log_file": "pipeline/bootstrap.log", "exit_file": "pipeline/bootstrap.exit", "notes": "string" },
     "1_design_extraction":  { "status": "...", "completed_at": "...", "notes": "..." },
     "2_research":           { "status": "...", "completed_at": "...", "notes": "..." },
     "2_5_brief_validation": { "status": "...", "completed_at": "...", "notes": "..." },
     "3_asset_generation":   { "status": "...", "completed_at": "...", "notes": "..." },
     "3_5_image_generation": { "status": "...", "completed_at": "...", "notes": "content images: hero, gallery, member portraits" },
     "3_6_video_generation": { "status": "...", "completed_at": "...", "notes": "video backgrounds: hero-bg, section-bg" },
-    "_bootstrap_join":      { "status": "pending|in_progress|completed|failed|halted_for_review", "completed_at": "ISO8601", "notes": "blocking join before phase 4" },
-    "4_frontend_build":     { "status": "...", "completed_at": "...", "notes": "..." },
-    "5_deploy":             { "status": "...", "completed_at": "...", "notes": "..." }
+    "3_8_hyperframes_hero_optional": { "status": "pending|in_progress|completed|skipped|failed|halted_for_review", "completed_at": "ISO8601", "notes": "optional branded kinetic typography hero intro video via HyperFrames" },
+    "4_1_frontend_codegen": { "status": "...", "completed_at": "...", "notes": "local Astro/Tailwind/Tina source generation" },
+    "4_2_tinacms_local_build": { "status": "...", "completed_at": "...", "notes": "local TinaCMS admin SPA build" },
+    "4_3_build_deploy":     { "status": "...", "completed_at": "...", "notes": "bootstrap join, sync, remote build, smoke, final validation" },
+    "5_publish_result":     { "status": "...", "completed_at": "...", "notes": "redacted final result" }
   }
 }
 ```
@@ -178,9 +254,11 @@ After every phase completes, update `pipeline/00-pipeline-state.json` AND rewrit
 | 3 | Asset Generation | ⏳ | - | Local-only, no VPS needed |
 | 3.5 | Image Generation | ⏳ | - | Local-only, no VPS needed |
 | 3.6 | Video Generation | ⏳ | - | Optional — kling-3.0 backgrounds |
-| — | Bootstrap Join | ⏳ | - | Waits before Phase 4 |
-| 4 | Frontend Build | ⏳ | - | - |
-| 5 | Deploy | ⏳ | - | - |
+| 3.8 | HyperFrames Hero Video | ⏳ | - | Optional — branded kinetic typography intro |
+| 4.1 | Frontend Codegen | ⏳ | - | Local source generation only |
+| 4.2 | TinaCMS Local Build | ⏳ | - | Local admin/schema build |
+| 4.3 | Build Deploy | ⏳ | - | Bootstrap join, sync, build, smoke |
+| 5 | Publish Result | ⏳ | - | Redacted operator handoff |
 ```
 
 Status icons: ✅ completed · 🔄 in_progress · ⏳ pending · ⏸️ halted · ❌ failed
@@ -227,7 +305,7 @@ By Phase 5, `pipeline/vps-connection.json` must also contain `site_dir`, `site_u
 
 ### Phase 0: VPS Bootstrap Launch (Non-Blocking, Runs Concurrently with Phases 1–3.5)
 
-The setup script is idempotent — safe on both fresh and partially-configured VPS. Fresh: ~3–5 min (apt + Gitea + Node + bun + first `bun install`). Warm: near-instant. Phases 1–3.5 are pure local+web work, so we launch bootstrap in the background and join on it only before Phase 4.
+The setup script is idempotent — safe on both fresh and partially-configured VPS. Fresh: ~3–5 min (apt + Gitea + Node + bun + first `bun install`). Warm: near-instant. Phases 1–4.2 are pure local+web work, so we launch bootstrap in the background and join on it only before Phase 4.3 build-deploy.
 
 **Step 1: Probe VPS state (quick, synchronous)**
 ```bash
@@ -246,7 +324,7 @@ echo "$STATE"
 
 | VPS State | Action |
 |-----------|--------|
-| `BOOTSTRAPPED=YES` AND `PROJECT=YES` | Skip launch. Mark `0_bootstrap.status=completed`. Proceed to Phase 1. |
+| `BOOTSTRAPPED=YES` AND `PROJECT=YES` | Skip launch. Mark `0_bootstrap_launch.status=completed`. Proceed to Phase 1. |
 | `BOOTSTRAPPED=YES` AND `PROJECT=NO` | Launch in background (project-phase-only, ~15–30s). |
 | `BOOTSTRAPPED=NO` | Launch in background (full install, ~3–5 min). |
 
@@ -271,11 +349,11 @@ nohup bash "$PROJECT_DIR/pipeline/_bg-bootstrap.sh" \
 echo $! > "$PROJECT_DIR/pipeline/bootstrap.pid"
 ```
 
-Update state to `launched`, then proceed immediately to Phase 1. The join runs before Phase 4.
+Update state to `launched`, then proceed immediately to Phase 1. The join runs before Phase 4.3 build-deploy.
 
-### Bootstrap Join (Blocking — runs before Phase 4)
+### Bootstrap Join (Blocking — runs before Phase 4.3)
 
-Phases 3 and 3.5 are local-only, so the join is deferred until Phase 4 actually needs the VPS. Invoke the extracted script from the project root:
+Phases 1 through 4.2 are local-only, so the join is deferred until Phase 4.3 actually needs the VPS. Invoke the extracted script from the project root:
 
 ```bash
 cd "$PROJECT_DIR"
@@ -289,13 +367,15 @@ case "$STATUS_LINE" in
 esac
 ```
 
-`phases/bootstrap-join.sh` waits for the background job, validates the exit file (with VPS-probe fallback for `/var/lib/site-pipeline/bootstrapped`), scps and validates `/tmp/pipeline-result.json`, merges it into `vps-connection.json`, confirms Node/Caddy/Gitea services + Caddy config + authenticated Gitea HTTP 200, and marks `0_bootstrap` + `_bootstrap_join` completed in the state file. On any non-OK status, Phase 1–3.5 outputs are still on disk — re-running the orchestrator resumes from the join.
+`phases/bootstrap-join.sh` waits for the background job, validates the exit file (with VPS-probe fallback for `/var/lib/site-pipeline/bootstrapped`), fetches `/var/lib/site-pipeline/pipeline-result.json` over an owner-only `sudo cat` channel, validates it, merges it into `vps-connection.json`, confirms Node/Caddy/Gitea services + Caddy config + authenticated Gitea HTTP 200, and marks `0_bootstrap_launch` completed in the state file. On any non-OK status, completed local outputs are still on disk — re-running the orchestrator resumes from the join.
 
 Emitted tokens: `BOOTSTRAP_FAILED`, `BOOTSTRAP_RESULT_INVALID`, `BOOTSTRAP_JOIN_PROBE_FAILED`, `BOOTSTRAP_JOIN_GITEA_AUTH_FAILED`, `BOOTSTRAP_OK`.
 
 ### Phase 1: Design Extraction (Conditional)
 
-Read `pipeline/00-brief.json`. If it has `reference_urls`, `competitor_urls`, or legacy `design_references.reference_sites`, invoke `@astro-static/design-extractor`. Prefer `reference_urls` as the canonical field.
+Read `pipeline/00-brief.json`. If it has `reference_urls`, `competitor_urls`, or legcy `design_references.reference_sites`, invoke `@astro-static/design-extractor`. Prefer `reference_urls` as the canonical field.
+
+If the brief includes an `instagram_handle` with `instagram_use` set to `design_reference` or `both`, the design-extractor dispatches `@astro-static/instagram-extractor` (mode=design) automatically when it encounters the Instagram URL. Instagram-extracted design tokens and visual analysis land in `pipeline/00-instagram/` and are merged into the `00-design-tokens/` output.
 
 **Output:** `pipeline/00-design-tokens/` with `tokens.json` (W3C DTCG color/typography/spacing/shadow/radii), `patterns/` (section pattern YAMLs), `extraction-report.md` (confidence-scored summary).
 
@@ -309,6 +389,8 @@ Read `pipeline/00-brief.json`. If it has `reference_urls`, `competitor_urls`, or
 ### Phase 2: Research
 
 Invoke `@astro-static/researcher` with `pipeline/00-brief.json` and `pipeline/00-design-tokens/` (if Phase 1 ran).
+
+If the brief includes an `instagram_handle` with `instagram_use` set to `brand_research` or `both`, the researcher dispatches `@astro-static/instagram-extractor` (mode=brand). Brand signals from `pipeline/00-instagram/brand-signals.json` inform the creative brief's brand personality, content structure, and recommendations.
 
 **Output:** `pipeline/01-creative-brief.json`
 
@@ -378,7 +460,7 @@ Invoke `@astro-static/asset-generator` with `pipeline/01-creative-brief.json` an
 **Validation (all required):**
 - `pipeline/02-asset-manifest.json` exists and is valid JSON
 - `pipeline/02-font-config.json` has `heading` + `body` keys with `google_url`
-- `src/styles/theme.css` exists and contains `@theme {` block
+- `src/styles/theme.css` exists, contains `@theme {`, and is reachable from a Tailwind v4 entry (`@import "tailwindcss"` in `theme.css`, or `global.css` imports both Tailwind and theme.css)
 - Every file path in `02-asset-manifest.json` exists on disk
 - WCAG AA contrast ≥ 4.5:1 for text/background
 
@@ -487,7 +569,7 @@ The fallback writes valid SVG placeholder assets at safe `.svg` paths, records
 acceptable for a first deploy only when the phase status notes explicitly say
 `placeholder refinement needed`.
 
-**Do NOT sync images to VPS.** Phase 4 syncs all local files after the Bootstrap Join.
+**Do NOT sync images to VPS.** Phase 4.3 build-deploy syncs all local files after the Bootstrap Join.
 
 ### Phase 3.6: Video Background Generation (Optional)
 
@@ -540,7 +622,9 @@ Write `pipeline/02-video-shot-list.json`:
 
 **Poster pairing:** Every video entry should reference an existing poster image from `content_images`. If the poster doesn't exist for that section, omit `poster_path` — the frontend-builder generates a gradient fallback.
 
-**Image-to-video option:** If the brief has a strong hero image already generated, set `image_url` to the public-facing URL of that image to use image-to-video mode (kling-3.0 supports both). Only use this for premium briefs — it costs the same but produces more coherent results from an existing visual anchor.
+`poster_path` must be a still image (`.webp`, `.png`, `.jpg`, `.jpeg`, `.avif`) and must never equal the MP4 `output_path`. The frontend-builder uses native `<video poster>` only; it must not render a separate static poster `<img>` behind a playing clip.
+
+**Image-to-video option:** If the brief has a strong hero image already generated, set `image_url` to the public-facing URL of that image to use image-to-video mode. The `vid-gen` agent must choose a dedicated verified i2v model from the PPQ model library; do not assume the default t2v model supports image input. Only use this for premium briefs — it costs the same or more but produces more coherent results from an existing visual anchor.
 
 **Step 2: Generate via `@astro-static/asset-generator` video-background mode** — pass `pipeline/02-video-shot-list.json` plus `pipeline/01-creative-brief.json`. The asset-generator delegates to `@astro-static/vid-gen` once per video, sequentially (async API, ~1-5 min per video). The orchestrator must not call `@astro-static/vid-gen` directly.
 
@@ -563,6 +647,10 @@ for path in $(jq -r '.video_backgrounds[] | select(.status=="generated") | .outp
   SIZE=$(du -k "$path" | cut -f1)
   [ "$SIZE" -gt 100 ] || { echo "STATUS:VIDEO_TOO_SMALL path=$path size_kb=$SIZE"; FAILED=1; }
 done
+for poster in $(jq -r '.video_backgrounds[] | select(.status=="generated" and .poster_path != null) | .poster_path' pipeline/02-asset-manifest.json 2>/dev/null); do
+  case "$poster" in *.mp4|*.mov|*.m4v|*.webm) echo "STATUS:MISSING_VIDEO reason=poster_is_video path=$poster"; FAILED=1;; esac
+  [ -f "$poster" ] || { echo "STATUS:MISSING_VIDEO reason=poster_missing path=$poster"; FAILED=1; }
+done
 [ "${FAILED:-0}" = "0" ] || exit 1
 echo "STATUS:VIDEO_BACKGROUNDS_OK"
 ```
@@ -581,51 +669,132 @@ must appear in `STATUS.md` / `RESULT.md` as a refinement blocker.
 
 **Cost control:** Expect ~$1.29 per 5-second video at 16:9. A typical site with 2-3 video backgrounds costs ~$3-4 total in video generation. Warn in the shot list if the brief would trigger more than 5 videos.
 
-**Do NOT sync videos to VPS.** Phase 4 syncs all local files after the Bootstrap Join.
+**Do NOT sync videos to VPS.** Phase 4.3 build-deploy syncs all local files after the Bootstrap Join.
 
-### Phase 4: Frontend Build
+### Phase 4.2: TinaCMS Admin SPA Local Build
+
+**Prerequisite:** Phase 4.1 frontend codegen completed. Phase 2 (research) and codegen must have produced `tina/config.ts` with collections matching the content model. This phase is local-only and does not need SSH access.
+
+The VPS (2GB RAM) OOM-kills esbuild during `tinacms build`. The admin SPA must be built locally on the control node (Mac) and left in the project root for the build-deployer to publish later. The admin SPA lives at `admin/` in the project root (NOT inside `dist/client/`).
+
+**Step 1: Run the local build script**
+
+```bash
+cd "$PROJECT_DIR"
+OUTPUT=$(bash ~/.config/opencode/astro-static/phases/tinacms-local-build.sh 2>&1)
+echo "$OUTPUT"
+STATUS_LINE=$(printf '%s\n' "$OUTPUT" | grep -E '^STATUS:' | tail -1)
+case "$STATUS_LINE" in
+  STATUS:TINACMS_BUILD_OK*) : ;;
+  *) # write pipeline/HUMAN_REVIEW.md with the log tail + $STATUS_LINE, halt
+     exit 1 ;;
+esac
+```
+
+The script:
+1. Runs `npx tinacms build --local --skip-cloud-checks` locally
+2. Verifies `admin/index.html` + `admin/assets/` exist and are non-empty
+3. Verifies `tina/__generated__/_schema.json` exists (needed by `databaseClient.ts` on VPS)
+4. Verifies `admin/login.html` and `admin/bridge.js` exist
+5. Leaves all artifacts local for build-deployer; no remote sync/restart happens here
+
+**Step 2: Validate**
+
+```bash
+[ -f "$PROJECT_DIR/admin/index.html" ] || { echo "STATUS:TINACMS_BUILD_FAILED reason=no_admin_index"; exit 1; }
+[ -d "$PROJECT_DIR/admin/assets" ] || { echo "STATUS:TINACMS_BUILD_FAILED reason=no_admin_assets"; exit 1; }
+[ -f "$PROJECT_DIR/tina/__generated__/_schema.json" ] || { echo "STATUS:TINACMS_BUILD_FAILED reason=no_schema"; exit 1; }
+echo "STATUS:TINACMS_BUILD_OK"
+```
+
+**Step 3: Update state**
+
+Mark `4_2_tinacms_local_build.status = "completed"` in `pipeline/00-pipeline-state.json`.
+
+**Failure handling:** If `tinacms build` fails locally, check:
+- `tina/config.ts` syntax errors
+- Missing dependencies (`bun install` or `npm install` first)
+- Schema collection `path` must match actual content directory (e.g., `src/content/pages` not `src/content/page`)
+
+**Why local?** The VPS has 2GB RAM + 2GB swap. esbuild (used by `tinacms build`) needs ~1GB+ and gets OOM-killed even with swap. Building locally on a Mac with 16GB+ RAM takes ~10 seconds and produces the same output.
+
+**Do NOT run `tinacms build` on the VPS.** The npm `build` script in `package.json` only runs `astro build`. The `tinacms:build` script exists for local development only.
+
+### Phase 3.8: HyperFrames Hero Video (Default-On)
+
+**Prerequisite:** Phase 4.2 completed when Tina admin assets are needed. Local-only — does not touch the VPS.
+
+Generates a branded kinetic typography hero intro video using HyperFrames (HTML + GSAP + headless Chrome → deterministic MP4) only when explicitly enabled/requested. Uses the site's actual fonts, colors, and logo from earlier phases. When recommended but not enabled, record a non-blocking warning in `STATUS.md` and skip. The animation style is derived from the creative brief's `brand_personality` and `motion_direction` — subtle fades for corporate brands, energetic typography for bold brands.
+
+**Step 1: Probe toolchain**
+
+```bash
+STATUS_LINE=$(bash ~/.config/opencode/astro-static/phases/hyperframes-probe.sh 2>&1 | tail -1)
+case "$STATUS_LINE" in
+  STATUS:HYPERFRAMES_AVAILABLE*) ;;
+  STATUS:HYPERFRAMES_UNAVAILABLE*)
+    REASON=$(echo "$STATUS_LINE" | grep -o 'reason=[^ ]*' | cut -d= -f2)
+    echo "Phase 3.8 skipped: $REASON"
+    # Mark phase skipped with reason, continue to Bootstrap Join
+    # update state: 3_8_hyperframes_hero_optional.status = "skipped", notes = $STATUS_LINE
+    ;;
+  *)
+    echo "STATUS:HYPERFRAMES_PROBE_FAILED output=$STATUS_LINE"
+    exit 1
+    ;;
+esac
+```
+
+**Step 2: Dispatch subagent**
+
+Invoke `@astro-static/hyperframes-vid-gen` with the project directory as working context. The subagent reads all needed inputs from `pipeline/` and `src/styles/theme.css` autonomously. It authors the HTML composition, renders the MP4, validates the output, and updates `pipeline/02-asset-manifest.json`.
+
+The orchestrator must ensure the project root and pipeline directory exist before dispatching:
+
+```bash
+cd "$PROJECT_DIR"
+# Subagent preflight: creative brief must be valid (no unresolved flags)
+jq -e '._requires_human_confirmation != true' pipeline/01-creative-brief.json >/dev/null \
+  || { echo "STATUS:HYPERFRAMES_SKIPPED reason=brief_flagged"; exit 0; }
+```
+
+**Step 3: Validate output**
+
+The subagent emits `STATUS:HYPERFRAMES_OK` on success. After the subagent returns, verify the output independently:
+
+```bash
+OUTPUT="public/videos/hero-intro.mp4"
+test -f "$OUTPUT" || { echo "STATUS:HYPERFRAMES_MISSING_OUTPUT"; exit 1; }
+SIZE=$(du -k "$OUTPUT" | cut -f1)
+[ "$SIZE" -gt 100 ] || { echo "STATUS:HYPERFRAMES_OUTPUT_TOO_SMALL size_kb=$SIZE"; exit 1; }
+echo "STATUS:HYPERFRAMES_HERO_OK size_kb=$SIZE"
+```
+
+**Step 4: Update state**
+
+Mark `3_8_hyperframes_hero_optional.status = "completed"` in `pipeline/00-pipeline-state.json`. Update `pipeline/STATUS.md`.
+
+**Do NOT sync to VPS.** Phase 4.3 build-deploy syncs all local files after the Bootstrap Join.
+
+**Failure handling:** If the subagent returns a non-OK status, retry once with the error output. On second failure, mark the phase failed and continue — the hero section falls back to a static gradient. HyperFrames failure is non-blocking; do not write `HUMAN_REVIEW.md` unless it's the third consecutive failure. Max 2 retries for this phase.
+
+**Cost:** Zero. Local CPU rendering (Chrome + FFmpeg), typically 30–90 seconds on Apple Silicon. No API calls, no per-video fees.
+
+### Phase 4.3: Build Deploy
 
 **Prerequisite:** Bootstrap Join completed successfully. `pipeline/vps-connection.json` has `site_dir` merged in from the bootstrap result.
 
-**Step 0: Sync local assets to VPS**
+All Phase 3 + 3.5 + 3.6 + 3.8 + 4.1 + 4.2 output (theme CSS, logo, favicons, content images, video backgrounds, font config, generated source, TinaCMS admin SPA, generated schema, HyperFrames hero video when enabled) is kept local until now. Build-deployer owns Bootstrap Join, sync, remote build, smoke, and final validation.
 
-All Phase 3 + 3.5 + 3.6 output (theme CSS, logo, favicons, content images, video backgrounds, font config) is kept local until now. Sync before invoking the frontend-builder:
+**Step 1: Invoke `@astro-static/build-deployer`**
 
-```bash
-SITE_DIR=$(jq -r '.site_dir' pipeline/vps-connection.json)
-
-# setup-vps.sh runs as root; EXIT trap chowns but may not have fired.
-$SSH_CMD "sudo chown -R $USER:$USER $SITE_DIR" 2>/dev/null || true
-
-# --timeout=60 aborts if no I/O for 60s. `timeout 180` is the hard ceiling.
-timeout 180 rsync -avz --timeout=60 -e "ssh -p $PORT -i $KEY -o ConnectTimeout=10" \
-  src/    $USER@$HOST:$SITE_DIR/src/
-timeout 180 rsync -avz --timeout=60 -e "ssh -p $PORT -i $KEY -o ConnectTimeout=10" \
-  public/ $USER@$HOST:$SITE_DIR/public/
-timeout 180 rsync -avz --timeout=60 -e "ssh -p $PORT -i $KEY -o ConnectTimeout=10" \
-  pipeline/ $USER@$HOST:$SITE_DIR/pipeline/
-```
-`timeout` exit 124 = hung. Retry once; on second failure record via `append_retry "phase4-rsync" "STATUS:RSYNC_STALL exit=124"` and write `HUMAN_REVIEW.md`.
-
-**Step 1: Invoke `@astro-static/frontend-builder`**
-
-Inputs: `pipeline/01-creative-brief.json`, `pipeline/02-asset-manifest.json`, `pipeline/02-font-config.json`, `pipeline/vps-connection.json`. The builder writes code locally, rsyncs the full project, runs `astro build` remotely.
+Inputs: generated source tree, `admin/`, `tina/__generated__/`, `pipeline/02-asset-manifest.json`, and `pipeline/vps-connection.json`. The build-deployer performs the remote operational work; frontend-builder must already have emitted `STATUS:FRONTEND_CODEGEN_OK` and has no deploy permissions.
 
 **Step 2: Confirm build output**
 
-Build uses `bun` (installed by `setup-vps.sh` Phase 6). `bun install` is 3-5x faster than `npm install` on cold caches; `bun run check`/`build` proxy to the `package.json` scripts (`astro check` / `astro build`) so we get bun's faster module resolution without changing Astro itself.
+Build uses `/usr/local/bin/site-build`, installed by `setup-vps.sh` Phase 8. The wrapper runs `bun install --silent`, `bun run check`, `bun run build`, then restarts `astro-ssr-<project>` so TinaCMS `/api/tina/*` and `/tina-island/*` routes are live immediately after build.
 
-```bash
-INSTALL_OUTPUT=$($SSH_CMD "cd $SITE_DIR && timeout 180 bun install --silent" 2>&1) \
-  || { printf '%s\n' "$INSTALL_OUTPUT"; echo "STATUS:BUILD_FAILED reason=bun_install"; exit 1; }
-CHECK_OUTPUT=$($SSH_CMD "cd $SITE_DIR && timeout 180 bun run check" 2>&1) \
-  || { printf '%s\n' "$CHECK_OUTPUT"; echo "STATUS:ASTRO_CHECK_FAILED"; exit 1; }
-BUILD_OUTPUT=$($SSH_CMD "cd $SITE_DIR && timeout 300 bun run build" 2>&1) \
-  || { printf '%s\n' "$BUILD_OUTPUT"; echo "STATUS:BUILD_FAILED"; exit 1; }
-STATUS_LINE=$($SSH_CMD "test -f $SITE_DIR/dist/index.html \
-                       && echo STATUS:BUILD_OK \
-                       || echo STATUS:BUILD_FAILED reason=no_index_html")
-```
+The build-deployer runs `/usr/local/bin/site-build`, preserves full non-secret diagnostics, reports `STATUS:BUILD_FAILED reason=astro_ssr_restart` if the SSR service restart fails, and verifies `$SITE_DIR/dist/client/index.html` exists.
 
 On `ASTRO_CHECK_FAILED` or `BUILD_FAILED`, retry via the frontend-builder with
 the full error output (not `tail`) and retry-dedupe. Max 5 retries. A successful
@@ -634,25 +803,12 @@ failed until both are clean.
 
 **Step 3: Smoke test (post-build functional checks)**
 
-`BUILD_OK` only confirms `dist/index.html` was emitted — not that the page works. Run the extracted smoke script on the VPS:
+`BUILD_OK` only confirms `dist/client/index.html` was emitted — not that the page works. The build-deployer runs `phases/smoke.sh` on the VPS from `dist/client/` and preserves full non-secret output. On smoke failure, re-invoke frontend-builder with the failing `SMOKE_FAIL check=<name>` hint; max 3 smoke retries.
 
-```bash
-STATUS_LINE=$($SSH_CMD "cd $SITE_DIR/dist && bash -s" \
-              < ~/.config/opencode/astro-static/phases/smoke.sh 2>&1 | tail -1)
-case "$STATUS_LINE" in
-  STATUS:SMOKE_OK*) : ;;
-  *) # re-invoke frontend-builder with $STATUS_LINE as the error hint
-     # retry with retry-dedupe; max 3 smoke retries
-     ;;
-esac
-```
-
-`phases/smoke.sh` runs 6 checks against `dist/`: stylesheet link present, linked CSS files non-empty, theme tokens emitted, internal nav links resolve, no unrendered `{{...}}` leakage, `<title>` is not a placeholder. Any failure returns `SMOKE_FAIL check=<name>` — pass that string back to the builder so it knows which file to fix. If smoke check `no_stylesheet_link` fails repeatedly, the builder is forgetting to import `theme.css` in `BaseLayout.astro` — pass that hint explicitly.
+`phases/smoke.sh` runs functional checks against `dist/client/`: stylesheet link present, linked CSS files non-empty, theme tokens emitted, internal nav links resolve, no unrendered `{{...}}` leakage, `<title>` is not a placeholder, referenced video files exist and are non-empty, video posters are still images, no `video-bg__poster` static layer exists, and reduced-motion does not hide generated clips. Any failure returns `SMOKE_FAIL check=<name>` — pass that string back to the builder so it knows which file to fix. If smoke check `no_stylesheet_link` fails repeatedly, the builder is forgetting to import `theme.css` in `BaseLayout.astro` — pass that hint explicitly.
 
 **Step 4: Strict final validation**
-```bash
-python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase final . --pipeline-dir pipeline/
-```
+The build-deployer runs `python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase final . --pipeline-dir pipeline/` locally and emits `STATUS:BUILD_DEPLOY_OK` only when final validation exits 0.
 
 ### Phase 5: Deploy
 
@@ -667,16 +823,16 @@ echo "$OUTPUT"
 STATUS_LINE=$(printf '%s\n' "$OUTPUT" | grep -E '^STATUS:' | tail -1)
 ```
 
-`phases/push-gitea.sh` handles: local commit (idempotent), idempotent repo creation via Gitea API, authenticated remote URL setup, authenticated HTTP preflight (repo-scoped), `git pull --rebase` (catches remote content commits on the VPS), push with `GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=30 timeout 180` for stall detection. Raw `/dev/tcp` is not a hard blocker because it produced false negatives on macOS/control-node shells while HTTP was healthy.
+`phases/push-gitea.sh` handles: local commit (idempotent), idempotent repo creation via Gitea API, authenticated remote URL setup, authenticated HTTP preflight (repo-scoped), `git pull --rebase` (catches remote content commits on the VPS), push with relaxed slow-link detection (`GIT_HTTP_LOW_SPEED_LIMIT=100 GIT_HTTP_LOW_SPEED_TIME=90 timeout 300`), and an SSH git-bundle fallback that pushes locally on the VPS when public Gitea HTTP is flaky. Raw `/dev/tcp` is not a hard blocker because it produced false negatives on macOS/control-node shells while HTTP was healthy.
 
-Emitted tokens: `NOTHING_TO_COMMIT`, `GITEA_HTTP_UNHEALTHY`, `GITEA_REPO_MISSING`, `GITEA_AUTH_FAILED`, `GIT_REBASE_CONFLICT`, `PUSH_TIMEOUT`, `PUSH_FAILED`, `PUSH_OK`. A failed raw TCP probe is only a `WARN:GITEA_TCP_PROBE_FAILED` diagnostic and is not a deployment blocker when authenticated HTTP succeeds.
+Emitted tokens: `NOTHING_TO_COMMIT`, `GITEA_TCP_PROBE_WARNING`, `GITEA_HTTP_UNHEALTHY`, `GITEA_REPO_MISSING`, `GITEA_AUTH_FAILED`, `GIT_REBASE_CONFLICT`, `PUSH_TIMEOUT`, `PUSH_FAILED`, `PUSH_OK`. A failed raw TCP probe is only a `STATUS:GITEA_TCP_PROBE_WARNING` diagnostic and is not a deployment blocker when authenticated HTTP succeeds.
 
 Recovery:
 - `GITEA_HTTP_UNHEALTHY`: SSH to VPS, run `systemctl status gitea`, retry.
 - `GITEA_REPO_MISSING`: the script already tried to create it — a second failure means Gitea is misbehaving. Halt.
 - `GITEA_AUTH_FAILED`: Bootstrap Join merged bad credentials somehow — halt for review.
 - `GIT_REBASE_CONFLICT`: a human has to reconcile — halt.
-- `PUSH_TIMEOUT`: partial push may be on the server — do NOT retry blindly, write `HUMAN_REVIEW.md` and halt.
+- `PUSH_TIMEOUT`: HTTP push and the SSH git-bundle fallback both failed; partial push may be on the server — do NOT retry blindly, write `HUMAN_REVIEW.md` and halt.
 
 Max 3 push retries total.
 
@@ -684,8 +840,9 @@ Max 3 push retries total.
 ```bash
 SITE_URL=$(jq -r '.site_url' pipeline/vps-connection.json)
 HTTP_CODE=$(curl -s -L -o /dev/null -w "%{http_code}" "$SITE_URL")
-[ "$HTTP_CODE" = "200" ] && echo "STATUS:SITE_LIVE" || echo "STATUS:SITE_ERR code=$HTTP_CODE"
+[ "$HTTP_CODE" = "200" ] && echo "STATUS:SITE_LIVE url=$SITE_URL" || echo "STATUS:SITE_ERR code=$HTTP_CODE url=$SITE_URL"
 ```
+If `site_url` uses sslip.io (`*.sslip.io`), DNS propagation is instant (no TTL delay).
 
 After deployment, the `git-sync-${PROJECT_NAME}` watcher auto-rebuilds on file-backed content changes: inotifywait → git commit + push + `astro build` → site updated. No manual rebuild needed.
 
@@ -741,13 +898,25 @@ Single shared parser regex: `^STATUS:([A-Z_][A-Z0-9_]*)(.*)$`. Extend, don't ren
 | 3.6 | `VIDEO_BACKGROUNDS_OK` | Success marker |
 | 3.6 | `ASSET_FALLBACK_VIDEOS_OK` | Manifest reconciled — failed videos marked, posters/gradients designated |
 | 3.6 | `ASSET_FALLBACK_VIDEOS_SKIPPED` | No video shot list present; carries `reason=` |
+| 4.2 | `TINACMS_BUILD_OK` | Success marker — admin SPA and generated schema built locally |
+| 3.7 | `TINACMS_BUILD_FAILED` | `tinacms build` failed locally; carries `reason=` |
+| 3.8 | `HYPERFRAMES_AVAILABLE` | Toolchain probe: Node.js 22+, FFmpeg, skills all present |
+| 3.8 | `HYPERFRAMES_UNAVAILABLE` | Toolchain probe: missing dependency; carries `reason=` |
+| 3.8 | `HYPERFRAMES_PROBE_FAILED` | Probe script itself failed (unexpected) |
+| 3.8 | `HYPERFRAMES_SKIPPED` | Phase intentionally skipped; carries `reason=` |
+| 3.8 | `HYPERFRAMES_OK` | Subagent success; carries `duration=`, `resolution=`, `codec=`, `size_kb=`, `path=` |
+| 3.8 | `HYPERFRAMES_MISSING_OUTPUT` | Output MP4 not found after subagent claimed success |
+| 3.8 | `HYPERFRAMES_OUTPUT_TOO_SMALL` | MP4 under 100 KB; carries `size_kb=` |
+| 3.8 | `HYPERFRAMES_RENDER_FAILED` | `npx hyperframes render` failed; carries `reason=` |
+| 3.8 | `HYPERFRAMES_INVALID_MP4` | ffprobe failed on output; carries `reason=` |
+| 3.8 | `HYPERFRAMES_HERO_OK` | Final orchestrator-side validation passed |
 | 4 | `ASTRO_CHECK_FAILED` | `bun run check` (astro check) non-zero; halts the phase regardless of build outcome |
 | 4 | `BUILD_FAILED` | `astro build` non-zero; may carry `reason=` |
 | 4 | `BUILD_OK` | Success marker |
 | 4 | `SMOKE_FAIL` | Post-build smoke check failed; carries `check=` |
 | 4 | `SMOKE_OK` | Success marker |
 | 4 | `RSYNC_STALL` | `timeout 180 rsync` hit 124 |
-| 5 | `WARN:GITEA_TCP_PROBE_FAILED` | Non-blocking diagnostic: raw TCP probe failed, but script continues to authenticated HTTP preflight |
+| 5 | `GITEA_TCP_PROBE_WARNING` | Non-blocking diagnostic: raw TCP probe failed, but script continues to authenticated HTTP preflight |
 | 5 | `GITEA_HTTP_UNHEALTHY` | Gitea responded with unexpected HTTP code; carries `code=` |
 | 5 | `GITEA_REPO_MISSING` | Preflight 404 on authenticated repo endpoint; carries `user=`, `repo=` |
 | 5 | `GITEA_AUTH_FAILED` | Preflight 401/403 on authenticated repo endpoint; carries `code=` |
@@ -763,6 +932,8 @@ Subagent preflight tokens (emitted before control returns):
 `INVALID_FONT_CONFIG`, `INVALID_CREATIVE_BRIEF`, `INVALID_VPS_CONFIG`,
 `THEME_CSS_MALFORMED`, `BRIEF_FLAGGED`, `VPS_UNREACHABLE`, `VPS_CONNECTION_INVALID`,
 `BRIEF_INVALID`, `PREFLIGHT_OK`, `ASSETS_OK`, `IMG_GEN_FAILED`, `VID_GEN_FAILED`,
+`HYPERFRAMES_AVAILABLE`, `HYPERFRAMES_UNAVAILABLE`, `HYPERFRAMES_OK`,
+`HYPERFRAMES_RENDER_FAILED`, `HYPERFRAMES_MISSING_OUTPUT`.
 Content schema validation is covered by `astro build` and `validate-pipeline.py`.
 
 #### Retry Dedupe
@@ -787,6 +958,40 @@ done
 
 `should_retry` allows one retry of the same (phase, hash) signature, then halts. Two identical errors in a row means the retry isn't fixing anything — halt and surface it.
 
+### CMS (TinaCMS)
+
+TinaCMS is the standard CMS path for astro-static sites. Public pages remain statically prerendered; only editor/admin surfaces use the Astro Node adapter.
+
+- `/admin/*` — generated Tina admin SPA, built **locally** on the control node (Phase 4.2) at `admin/` and published by build-deployer. Caddy serves this directly from `${SITE_DIR}/admin/`, NOT from `dist/client/admin/` (which `astro build` wipes).
+- `/tina-island/*` — on-demand visual-editing island refresh endpoint.
+- `/api/tina/*` — self-hosted Tina GraphQL backend using `@tinacms/datalayer`, `MemoryLevel` (pure JS, no native bindings), and the `FilesystemBridge`. Content is indexed in-memory on server start.
+- Never emit Sveltia/Decap files (`public/admin/config.yml`).
+- Do not hand-author `admin/index.html`; TinaCMS generates it via `tinacms build`.
+- **Never run `tinacms build` on the VPS** — the 2GB VM OOM-kills esbuild. The npm `build` script only runs `astro build`. The admin SPA is pre-built and committed.
+- The `tina/config.ts` `build.publicFolder` must be `"."` and `build.outputFolder` must be `"admin"` so the admin SPA lands at `./admin/` (project root), not inside `dist/client/`.
+- TinaCMS collection `path` values must match Astro Content Collection `base` paths exactly (e.g., both `src/content/pages`, not singular/plural mismatched).
+
+### Security hardening (installed by Phase 2.5 of setup-vps.sh)
+
+The VPS bootstrap applies three layers of security hardening automatically during the first system-bootstrap run (idempotent — re-runs are no-ops once the marker exists):
+
+| Layer | File | What it does |
+|---|---|---|
+| **SSH daemon** | `/etc/ssh/sshd_config.d/99-astro-static.conf` | Disables password auth, root login, X11/agent/TCP forwarding, tunneling; restricts to ed25519 + post-quantum KEX; emits `AllowUsers` for `$SUDO_USER` if detectable. |
+| **fail2ban** | `/etc/fail2ban/jail.local` | Enables sshd (6h ban / 3 retries), sshd-ddos (2h ban / 6 retries), and recidive (1w ban / 5 priors in 24h) jails with systemd backend. |
+| **unattended-upgrades** | `/etc/apt/apt.conf.d/20auto-upgrades` + `51unattended-upgrades-astro-static` | Auto-applies Debian Security origin updates daily; never auto-reboots; never auto-installs regular distro upgrades (operators plan those). |
+
+**Safety gate (SSHD):** The SSH hardening only applies if the deploy user (`$SUDO_USER`, or root if invoked directly) has at least one non-comment public key in `~/.ssh/authorized_keys`. Without that precondition the script skips SSH hardening and logs a warning — it never locks the operator out.
+
+**Escape hatch:** Operators can skip the entire phase by exporting `HARDENING_SKIP=true` before invoking `setup-vps.sh`. This is useful for VPS providers with their own hardening baseline (e.g. CIS-hardened images) where astro-static's settings would conflict.
+
+**Operator overrides:** Each drop-in is commented with a "DO NOT EDIT BY HAND" header. To customize without losing changes on re-run, create:
+- `/etc/ssh/sshd_config.d/98-local.conf` for SSH overrides (loaded before 99-, but most directives are last-match-wins)
+- `/etc/fail2ban/jail.d/99-local.conf` for jail overrides
+- `/etc/apt/apt.conf.d/52-local` for apt overrides
+
+Verify effective values with `sshd -T | grep <directive>`, `fail2ban-client -d`, and `apt-config dump | grep Unattended-Upgrade`.
+
 ### Final Output
 
 After Phase 5 passes, write `pipeline/RESULT.md`:
@@ -800,10 +1005,16 @@ After Phase 5 passes, write `pipeline/RESULT.md`:
 - **Client:** <client name>
 - **VPS:** <host> (<ip>)
 - **Domain:** <domain or "none">
+- **Site URL:** <site_url> (sslip.io temporary — replace with real domain in Caddy fragment)
 
 ## Live URLs
 - **Site:** <site_url> (<N> pages)
 - **Gitea:** <gitea_url>/<user>/<project>
+- **TinaCMS Admin:** <site_url>/admin/
+- **TinaCMS Login:** <site_url>/admin/login.html
+
+## Credentials
+- Credentials are not printed in this report. Authorized operators can read `pipeline/vps-connection.json` on the control node; it must remain mode `0600` and gitignored.
 
 ## Generated Pages
 | Page | URL | Status |
@@ -824,5 +1035,5 @@ After Phase 5 passes, write `pipeline/RESULT.md`:
 ```
 
 Also update final state and STATUS.md:
-- `phases.5_deploy.status = "completed"`
+- `phases.5_publish_result.status = "completed"`
 - Overall status: `COMPLETED`

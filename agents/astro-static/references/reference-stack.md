@@ -122,6 +122,7 @@ These artifacts are shared contracts across the pipeline. Agents may enrich them
 - `pipeline/02-image-shot-list.json` — derived content image generation tasks (Phase 3.5)
 - `pipeline/02-video-shot-list.json` — derived video background generation tasks (Phase 3.6, optional)
 - `pipeline/vps-connection.json` — SSH, site, and deploy connection details
+- `pipeline/00-pipeline-state.json` — canonical phase status file; phase IDs, status values, retry/invalidation semantics, and STATUS token grammar are defined in `references/pipeline-contract.md`
 
 ## Agent Contract Discipline
 
@@ -452,7 +453,7 @@ const posts = defineCollection({
 export const collections = { posts };
 ```
 
-Content is file-backed under `src/content/<collection>/`. Render with `getCollection()` / `getEntry()` from `astro:content`. Public pages stay statically prerendered. TinaCMS adds only editor/admin surfaces: generated `public/admin/`, `/tina-island/*` on-demand visual-editing routes, and `/api/tina/*` self-hosted GraphQL backend routes.
+Content is file-backed under `src/content/<collection>/`. Render with `getCollection()` / `getEntry()` from `astro:content`. Public pages stay statically prerendered. TinaCMS adds only editor/admin surfaces: generated `admin/` (at project root, NOT inside `dist/`), `/tina-island/*` on-demand visual-editing routes, and `/api/tina/*` self-hosted GraphQL backend routes.
 
 ---
 
@@ -464,17 +465,19 @@ Generated astro-static sites use TinaCMS as the CMS path:
 - Keep `output: "static"` for public pages.
 - Use `@astrojs/node` standalone adapter for on-demand editor routes.
 - `tina/config.ts` mirrors `src/content.config.ts` collection names and fields.
-- `tina/config.ts` must import `LocalAuthProvider` from `tinacms` and set `authProvider: new LocalAuthProvider()` so the admin stays self-hosted and never redirects to TinaCloud.
+- `tina/config.ts` must use a custom `PasswordAuthProvider` (extending `AbstractAuthProvider` from `tinacms`) — NOT `LocalAuthProvider`. `LocalAuthProvider` only sets a localStorage flag and does not interact with the backend session. The custom provider's `authenticate()` redirects to `/admin/login.html`, `getUser()` probes `/api/tina/auth-check` (GET → 200/401), `getToken()` returns `{ id_token: "" }`, and `logout()` calls `/api/tina/logout` then redirects to login. This ensures the admin SPA redirects unauthenticated users to the login page.
 - Every page/section collection must define `ui.router` so document clicks open the live visual editor route, not just the form editor.
 - Every Tina data loader must wrap generated client queries in `requestWithMetadata()`.
 - Every visible editable DOM node must carry `data-tina-field={tinaField(source, 'fieldName')}`. This is what enables click-to-edit outlines/focus in the preview.
 - For maximum Wix-like editing, model pages as ordered blocks/sections so editors can add, remove, and reorder components within the supported design system. Tina does component/block editing, not freeform canvas dragging.
 - Use `@tinacms/astro/TinaIsland.astro` to wrap editable regions.
 - Keep `export const prerender = false` on `src/pages/tina-island/[name].ts` and `src/pages/api/tina/[...routes].ts`.
-- Self-host production saves through `@tinacms/datalayer`, SQLite (`sqlite-level`), and the Gitea contents API.
-- `tinacms build` generates `public/admin/index.html` and `tina/__generated__/`; do not hand-author generated admin files.
+- Self-host production saves through `@tinacms/datalayer` with `MemoryLevel` (pure JS, no native bindings — Bun can't load `better-sqlite3`), `FilesystemBridge` for file I/O, and a `gitProvider` that writes through the filesystem bridge. Content is indexed in-memory on server start (~1s for small sites).
+- `tinacms build` generates `admin/index.html` and `tina/__generated__/`; do not hand-author generated admin files. **The admin SPA is built locally on the control node (Phase 4.2), NOT on the VPS** — the 2GB VM OOM-kills esbuild. The `admin/` directory is published by build-deployer and served by Caddy from `${SITE_DIR}/admin/`.
+- `tina/config.ts` build config MUST be `{ outputFolder: "admin", publicFolder: "." }` so the admin SPA lands at project root, not inside `dist/client/` (which `astro build` wipes).
+- TinaCMS collection `path` values MUST match Astro Content Collection `base` paths exactly (e.g., both `src/content/pages`, not singular/plural mismatched).
 
-Latest compatible baseline as of 2026-06-19: `astro@^6.4.8`, `@astrojs/node@^10.1.4`, `@astrojs/mdx@^6.0.3`, `@astrojs/react@^5.0.7`, `@astrojs/sitemap@^3.7.3`, `@tinacms/astro@^0.5.0`, `tinacms@^3.9.3`, `@tinacms/cli@^2.5.1`, `@tinacms/datalayer@^2.0.25`, `sqlite-level@^2.1.1`, `tailwindcss@^4.3.1`, `@tailwindcss/vite@^4.3.1`.
+Latest compatible baseline as of 2026-06-19: `astro@^6.4.8`, `@astrojs/node@^10.1.4`, `@astrojs/mdx@^6.0.3`, `@astrojs/react@^5.0.7`, `@astrojs/sitemap@^3.7.3`, `@tinacms/astro@^0.5.0`, `tinacms@^3.9.3`, `@tinacms/cli@^2.5.1`, `@tinacms/datalayer@^2.0.25`, `memory-level@^1.0.0`, `tailwindcss@^4.3.1`, `@tailwindcss/vite@^4.3.1`.
 
 ---
 
@@ -509,10 +512,37 @@ export default defineConfig({
 
 ## 8. Complete tina/config.ts auth baseline
 
-Every generated Tina config must include a self-hosted admin auth provider and visual-editor router entries:
+Every generated Tina config must include a custom password auth provider and visual-editor router entries:
 
 ```ts
-import { LocalAuthProvider, defineConfig } from 'tinacms';
+import { AbstractAuthProvider, defineConfig } from 'tinacms';
+
+/**
+ * Custom auth provider for self-hosted TinaCMS with password backend.
+ * - authenticate(): redirects to /admin/login.html
+ * - getUser(): probes /api/tina/auth-check for session cookie validity
+ * - getToken(): returns empty token (real auth is HttpOnly cookie, same-origin)
+ * - logout(): calls /api/tina/logout, redirects to login
+ */
+class PasswordAuthProvider extends AbstractAuthProvider {
+  async authenticate() {
+    if (window.location.pathname !== '/admin/login.html') {
+      window.location.href = '/admin/login.html';
+    }
+    return { access_token: 'LOCAL', id_token: 'LOCAL', refresh_token: 'LOCAL' };
+  }
+  async getUser() {
+    try {
+      const res = await fetch('/api/tina/auth-check', { method: 'GET' });
+      return res.ok;
+    } catch { return false; }
+  }
+  async getToken() { return { id_token: '' }; }
+  async logout() {
+    try { await fetch('/api/tina/logout', { method: 'POST' }); } catch {}
+    window.location.href = '/admin/login.html';
+  }
+}
 
 const routeForDocument = (document?: { lang?: string }) => {
   if (document?.lang === 'es') return '/es';
@@ -522,11 +552,10 @@ const routeForDocument = (document?: { lang?: string }) => {
 
 export default defineConfig({
   clientId: null,
-  token: process.env.TINA_TOKEN ?? null,
-  authProvider: new LocalAuthProvider(),
+  token: null,
+  authProvider: new PasswordAuthProvider(),
   contentApiUrlOverride: '/api/tina/gql',
-  branch: process.env.GITEA_BRANCH ?? 'main',
-  build: { outputFolder: 'admin', publicFolder: 'public' },
+  build: { outputFolder: 'admin', publicFolder: '.' },
   schema: {
     collections: [{
       name: 'sections',
@@ -538,11 +567,693 @@ export default defineConfig({
 });
 ```
 
-Without `authProvider`, Tina falls back to TinaCloud sign-in (`https://app.tina.io/signin?...`). That is a pipeline failure.
+Without `authProvider`, Tina falls back to TinaCloud sign-in (`https://app.tina.io/signin?...`). That is a pipeline failure. With `LocalAuthProvider`, the admin SPA thinks the user is always logged in (localStorage flag), but mutations fail with 401 — use `PasswordAuthProvider` instead.
+
+The backend `/api/tina/[...routes].ts` MUST expose three extra routes:
+- `login` (POST `{"password":"..."}` → sets `tina_admin_session` HttpOnly cookie)
+- `logout` (POST → clears cookie)
+- `auth-check` (GET → 200 if session valid, 401 if not)
+
+### TinaCMS Island Route (critical)
+
+`src/pages/tina-island/[name].ts` MUST export a `POST` handler using `experimental_createIslandRoute`. Without this, the bridge's `primeIslands()` fetch returns 404 and the edit panel never populates with form fields.
+
+```typescript
+// src/pages/tina-island/[name].ts
+import { experimental_createIslandRoute } from "@tinacms/astro/experimental";
+import { requestWithMetadata } from "@tinacms/astro";
+import Hero from "@/components/sections/Hero.astro";
+
+export const prerender = false;
+
+// The Tina client uses a relative URL (/api/tina/gql) which fails during SSR.
+// Construct the query result manually with the correct query string and variables.
+// The admin SPA fetches actual data via GraphQL separately — the island just
+// needs to register the form with the correct query/variables for matching.
+const PAGE_QUERY = `query page($relativePath: String!) {
+  page(relativePath: $relativePath) {
+    id title description heroTitle heroSubtitle
+    featuresHeading featuresSubheading
+    features { title description icon }
+    ctaHeading ctaBody ctaButtonText ctaButtonNote
+    footerText footerNote
+  }
+}`;
+
+const islands = {
+  page: {
+    fetch: async (_request: Request, params: URLSearchParams) => {
+      const relativePath = params.get("relativePath") || "welcome.md";
+      return requestWithMetadata(
+        { data: { page: {} }, query: PAGE_QUERY, variables: { relativePath } },
+        { priority: "primary" as const }
+      );
+    },
+    component: Hero as any,
+    propsFromData: (data: any) => ({
+      title: data?.data?.page?.heroTitle ?? "",
+      subtitle: data?.data?.page?.heroSubtitle ?? "",
+    }),
+    wrapper: { tag: "main", className: "flex-1" },
+  },
+};
+
+export const POST = experimental_createIslandRoute(islands);
+```
+
+**Key points:**
+- The `fetch` function must return a `requestWithMetadata()` result with the correct `query` and `variables` — the admin SPA uses these to match the form to the document.
+- Do NOT use the Tina client's HTTP fetch inside `fetch` — it uses a relative URL that fails during SSR.
+- The `component` is any Astro component that will be rendered inside the island wrapper.
+- `propsFromData` maps the Tina data to component props.
+- The route must be `export const prerender = false` (SSR only).
+
+### Complete Page Example — Static Visual Editing
+
+This is the canonical pattern for a statically-rendered page backed by a TinaCMS content collection. Every generated page MUST follow this structure — hardcoded content without collection queries produces a site where the TinaCMS admin shows "form fields will appear here" and nothing is editable.
+
+```astro
+---
+// src/pages/index.astro — canonical Tina-editable static page
+import { getEntry } from 'astro:content';
+import { TinaIsland } from '@tinacms/astro/TinaIsland.astro';
+import { requestWithMetadata, tinaField } from '@tinacms/astro';
+import { client } from '@/tina/__generated__/client';
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import Hero from '@/components/sections/Hero.astro';
+
+// 1. Fetch the content collection entry (Astro Content Collections API)
+const entry = await getEntry('page', 'welcome');
+
+// 2. Fetch the same document via the Tina client (for visual editing metadata)
+const tinaData = await client.requestWithMetadata(
+  (c) => c.page({ relativePath: 'welcome.md' }),
+  { priority: 'primary' }
+);
+
+// 3. Pass tinaField() metadata to components for click-to-edit
+const titleField = tinaField(tinaData.data.page, 'title');
+const descField = tinaField(tinaData.data.page, 'description');
+---
+
+<BaseLayout title={entry.data.title} description={entry.data.description}>
+  <TinaIsland
+    name="page"
+    wrapper={{ tag: 'main', className: 'flex-1' }}
+    params={{ relativePath: 'welcome.md' }}
+  >
+    <Hero
+      title={entry.data.title}
+      subtitle={entry.data.description}
+      titleField={titleField}
+      descField={descField}
+    />
+  </TinaIsland>
+</BaseLayout>
+```
+
+**Component with `data-tina-field`:**
+```astro
+---
+// src/components/sections/Hero.astro
+interface Props {
+  title: string;
+  subtitle: string;
+  titleField?: string;   // from tinaField()
+  descField?: string;    // from tinaField()
+}
+const { title, subtitle, titleField, descField } = Astro.props;
+---
+<section class="hero">
+  <h1 data-tina-field={titleField}>{title}</h1>
+  <p data-tina-field={descField}>{subtitle}</p>
+</section>
+```
+
+**Why both `getEntry()` and `client.requestWithMetadata()`?**
+- `getEntry()` provides the content for SSR/static rendering (Astro Content Collections).
+- `client.requestWithMetadata()` registers the document with TinaCMS so the admin can map form fields to DOM elements. Without it, the edit panel stays empty.
+- The `priority: 'primary'` option tells the admin to open this document's form on page load.
+
+**For `getStaticPaths` pages (dynamic routes):**
+```astro
+---
+// src/pages/[slug].astro
+import { getCollection } from 'astro:content';
+import { client } from '@/tina/__generated__/client';
+
+export async function getStaticPaths() {
+  const pages = await getCollection('page');
+  return pages.map((page) => ({
+    params: { slug: page.id },
+    props: { page },
+  }));
+}
+
+const { page } = Astro.props;
+const tinaData = await client.requestWithMetadata(
+  (c) => c.page({ relativePath: `${page.id}.md` }),
+  { priority: 'primary' }
+);
+---
+```
+
+**Key rules:**
+1. Every page that renders content-collection data MUST call `client.requestWithMetadata()` — this is what makes the admin edit panel populate.
+2. Every visible editable text/media node MUST carry `data-tina-field={tinaField(...)}`.
+3. Wrap editable regions in `<TinaIsland>` so the admin bridge script loads in the iframe.
+4. `requestWithMetadata` is a no-op outside the admin iframe (static builds) — it only activates when the page is viewed inside the TinaCMS admin preview.
+5. The `client` import comes from `tina/__generated__/client` (generated by `tinacms build` in Phase 4.2).
 
 ---
 
-## 9. Quick Anti-Pattern Checklist
+## 9. Block-Based Page Schemas (Complex Sites)
+
+For any site with more than one page layout, or where editors need to add/remove/reorder sections, model pages as **ordered block lists**. This is the core pattern for Wix-like editing in TinaCMS.
+
+### Tina config (tina/config.ts)
+
+```ts
+import { AbstractAuthProvider, defineConfig } from 'tinacms';
+
+class PasswordAuthProvider extends AbstractAuthProvider {
+  async authenticate() {
+    if (window.location.pathname !== '/admin/login.html') {
+      window.location.href = '/admin/login.html';
+    }
+    return { access_token: 'LOCAL', id_token: 'LOCAL', refresh_token: 'LOCAL' };
+  }
+  async getUser() {
+    try { return (await fetch('/api/tina/auth-check')).ok; } catch { return false; }
+  }
+  async getToken() { return { id_token: '' }; }
+  async logout() {
+    try { await fetch('/api/tina/logout', { method: 'POST' }); } catch {}
+    window.location.href = '/admin/login.html';
+  }
+}
+
+// --- Block templates ---
+// Each block is a reusable section type. Editors add/reorder/remove these
+// on any page. The `templates` array defines which blocks are available.
+const heroBlock = {
+  name: 'hero',
+  label: 'Hero Section',
+  ui: { previewSrc: '', defaultItem: { title: 'New Hero', subtitle: '' } },
+  fields: [
+    { name: 'title', type: 'string', required: true },
+    { name: 'subtitle', type: 'string', ui: { component: 'textarea' } },
+    { name: 'backgroundImage', type: 'image' },
+    { name: 'ctaText', type: 'string' },
+    { name: 'ctaHref', type: 'string' },
+  ],
+};
+
+const featuresBlock = {
+  name: 'features',
+  label: 'Features Grid',
+  fields: [
+    { name: 'heading', type: 'string' },
+    { name: 'subheading', type: 'string' },
+    {
+      name: 'items',
+      type: 'object',
+      list: true,
+      ui: { itemProps: (item: { title?: string }) => ({ label: item?.title }) },
+      fields: [
+        { name: 'title', type: 'string', required: true },
+        { name: 'description', type: 'string', ui: { component: 'textarea' } },
+        { name: 'icon', type: 'string' },
+      ],
+    },
+  ],
+};
+
+const galleryBlock = {
+  name: 'gallery',
+  label: 'Gallery',
+  fields: [
+    { name: 'heading', type: 'string' },
+    {
+      name: 'images',
+      type: 'object',
+      list: true,
+      fields: [
+        { name: 'image', type: 'image', required: true },
+        { name: 'caption', type: 'string' },
+      ],
+    },
+  ],
+};
+
+const ctaBlock = {
+  name: 'cta',
+  label: 'Call to Action',
+  fields: [
+    { name: 'heading', type: 'string', required: true },
+    { name: 'body', type: 'string', ui: { component: 'textarea' } },
+    { name: 'buttonText', type: 'string' },
+    { name: 'buttonHref', type: 'string' },
+  ],
+};
+
+const testimonialsBlock = {
+  name: 'testimonials',
+  label: 'Testimonials',
+  fields: [
+    { name: 'heading', type: 'string' },
+    {
+      name: 'items',
+      type: 'object',
+      list: true,
+      fields: [
+        { name: 'quote', type: 'string', ui: { component: 'textarea' }, required: true },
+        { name: 'author', type: 'string', required: true },
+        { name: 'role', type: 'string' },
+        { name: 'avatar', type: 'image' },
+      ],
+    },
+  ],
+};
+
+const contentBlock = {
+  name: 'content',
+  label: 'Rich Text',
+  fields: [
+    { name: 'heading', type: 'string' },
+    { name: 'body', type: 'rich-text' },
+  ],
+};
+
+export const blockTemplates = [
+  heroBlock,
+  featuresBlock,
+  galleryBlock,
+  testimonialsBlock,
+  ctaBlock,
+  contentBlock,
+];
+
+export default defineConfig({
+  clientId: null,
+  token: null,
+  authProvider: new PasswordAuthProvider(),
+  contentApiUrlOverride: '/api/tina/gql',
+  build: { outputFolder: 'admin', publicFolder: '.' },
+  schema: {
+    collections: [
+      // --- Pages: block-based, one entry per route ---
+      {
+        name: 'page',
+        label: 'Pages',
+        path: 'src/content/pages',
+        ui: { router: ({ document }) => `/${document._sys.filename === 'index' ? '' : document._sys.filename}` },
+        fields: [
+          { name: 'title', type: 'string', required: true },
+          { name: 'description', type: 'string' },
+          {
+            name: 'blocks',
+            label: 'Page Sections',
+            type: 'object',
+            list: true,
+            templates: blockTemplates,
+          },
+        ],
+      },
+      // --- Blog posts: separate collection with its own schema ---
+      {
+        name: 'post',
+        label: 'Blog Posts',
+        path: 'src/content/posts',
+        ui: { router: ({ document }) => `/blog/${document._sys.filename}` },
+        fields: [
+          { name: 'title', type: 'string', required: true },
+          { name: 'description', type: 'string', required: true },
+          { name: 'publishDate', type: 'datetime', required: true },
+          { name: 'author', type: 'string' },
+          { name: 'image', type: 'image' },
+          { name: 'body', type: 'rich-text' },
+          { name: 'draft', type: 'boolean' },
+        ],
+      },
+      // --- Team members: referenced by pages or independent ---
+      {
+        name: 'member',
+        label: 'Team Members',
+        path: 'src/content/members',
+        ui: { router: ({ document }) => `/team/${document._sys.filename}` },
+        fields: [
+          { name: 'name', type: 'string', required: true },
+          { name: 'role', type: 'string' },
+          { name: 'bio', type: 'string', ui: { component: 'textarea' } },
+          { name: 'photo', type: 'image' },
+          { name: 'email', type: 'string' },
+        ],
+      },
+      // --- Global site settings: singleton, not routed ---
+      {
+        name: 'settings',
+        label: 'Site Settings',
+        path: 'src/content/settings',
+        format: 'json',
+        ui: { router: () => '/' },
+        fields: [
+          { name: 'siteName', type: 'string', required: true },
+          { name: 'tagline', type: 'string' },
+          {
+            name: 'nav',
+            type: 'object',
+            list: true,
+            label: 'Navigation Menu',
+            fields: [
+              { name: 'label', type: 'string', required: true },
+              { name: 'href', type: 'string', required: true },
+            ],
+          },
+          {
+            name: 'footerLinks',
+            type: 'object',
+            list: true,
+            fields: [
+              { name: 'label', type: 'string', required: true },
+              { name: 'href', type: 'string', required: true },
+            ],
+          },
+          { name: 'socialTwitter', type: 'string' },
+          { name: 'socialInstagram', type: 'string' },
+          { name: 'socialLinkedIn', type: 'string' },
+          { name: 'contactEmail', type: 'string' },
+          { name: 'copyrightText', type: 'string' },
+        ],
+      },
+    ],
+  },
+});
+```
+
+### Astro content schema (src/content.config.ts)
+
+Mirror the Tina schema in Zod. Use discriminated unions for block types:
+
+```ts
+import { defineCollection, z } from 'astro:content';
+import { glob } from 'astro/loaders';
+
+// Block discriminant union — matches tina/config.ts templates
+const blockSchema = z.discriminatedUnion('_template', [
+  z.object({
+    _template: z.literal('hero'),
+    title: z.string(),
+    subtitle: z.string().optional(),
+    backgroundImage: z.string().optional(),
+    ctaText: z.string().optional(),
+    ctaHref: z.string().optional(),
+  }),
+  z.object({
+    _template: z.literal('features'),
+    heading: z.string().optional(),
+    subheading: z.string().optional(),
+    items: z.array(z.object({
+      title: z.string(),
+      description: z.string().optional(),
+      icon: z.string().optional(),
+    })).optional(),
+  }),
+  z.object({
+    _template: z.literal('gallery'),
+    heading: z.string().optional(),
+    images: z.array(z.object({
+      image: z.string(),
+      caption: z.string().optional(),
+    })).optional(),
+  }),
+  z.object({
+    _template: z.literal('testimonials'),
+    heading: z.string().optional(),
+    items: z.array(z.object({
+      quote: z.string(),
+      author: z.string(),
+      role: z.string().optional(),
+      avatar: z.string().optional(),
+    })).optional(),
+  }),
+  z.object({
+    _template: z.literal('cta'),
+    heading: z.string(),
+    body: z.string().optional(),
+    buttonText: z.string().optional(),
+    buttonHref: z.string().optional(),
+  }),
+  z.object({
+    _template: z.literal('content'),
+    heading: z.string().optional(),
+    body: z.any().optional(),
+  }),
+]);
+
+const pages = defineCollection({
+  loader: glob({ pattern: '**/*.{md,mdx,json}', base: './src/content/pages' }),
+  schema: z.object({
+    title: z.string(),
+    description: z.string().optional(),
+    blocks: z.array(blockSchema).optional(),
+  }),
+});
+
+const posts = defineCollection({
+  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/posts' }),
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    publishDate: z.coerce.date(),
+    author: z.string().optional(),
+    image: z.string().optional(),
+    body: z.any().optional(),
+    draft: z.boolean().optional(),
+  }),
+});
+
+const members = defineCollection({
+  loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/members' }),
+  schema: z.object({
+    name: z.string(),
+    role: z.string().optional(),
+    bio: z.string().optional(),
+    photo: z.string().optional(),
+    email: z.string().optional(),
+  }),
+});
+
+const settings = defineCollection({
+  loader: glob({ pattern: '*.json', base: './src/content/settings' }),
+  schema: z.object({
+    siteName: z.string(),
+    tagline: z.string().optional(),
+    nav: z.array(z.object({ label: z.string(), href: z.string() })).optional(),
+    footerLinks: z.array(z.object({ label: z.string(), href: z.string() })).optional(),
+    socialTwitter: z.string().optional(),
+    socialInstagram: z.string().optional(),
+    socialLinkedIn: z.string().optional(),
+    contactEmail: z.string().optional(),
+    copyrightText: z.string().optional(),
+  }),
+});
+
+export const collections = { pages, posts, members, settings };
+```
+
+### Block renderer component (src/components/BlockRenderer.astro)
+
+A single component that maps block `_template` to the right section component:
+
+```astro
+---
+import Hero from './sections/Hero.astro';
+import Features from './sections/Features.astro';
+import Gallery from './sections/Gallery.astro';
+import Testimonials from './sections/Testimonials.astro';
+import CTA from './sections/CTA.astro';
+import RichText from './sections/RichText.astro';
+
+interface Props {
+  block: { _template: string; [key: string]: any };
+  tinaField?: (source: any, field?: string, index?: number) => string;
+  index?: number;
+}
+
+const { block, tinaField: tf, index = 0 } = Astro.props;
+const blockField = tf ? (field?: string) => tf(block, field, index) : undefined;
+---
+
+{block._template === 'hero' && (
+  <Hero
+    title={block.title}
+    subtitle={block.subtitle}
+    backgroundImage={block.backgroundImage}
+    ctaText={block.ctaText}
+    ctaHref={block.ctaHref}
+    titleField={blockField?.('title')}
+    subtitleField={blockField?.('subtitle')}
+  />
+)}
+{block._template === 'features' && (
+  <Features
+    heading={block.heading}
+    subheading={block.subheading}
+    features={block.items ?? []}
+    headingField={blockField?.('heading')}
+    featuresField={blockField?.('items')}
+  />
+)}
+{block._template === 'gallery' && (
+  <Gallery heading={block.heading} images={block.images ?? []} />
+)}
+{block._template === 'testimonials' && (
+  <Testimonials heading={block.heading} items={block.items ?? []} />
+)}
+{block._template === 'cta' && (
+  <CTA heading={block.heading} body={block.body} buttonText={block.buttonText} buttonHref={block.buttonHref} />
+)}
+{block._template === 'content' && (
+  <RichText heading={block.heading} body={block.body} />
+)}
+```
+
+### Dynamic page route (src/pages/[...slug].astro)
+
+One route handles ALL pages. Each page entry's `blocks` array is rendered by BlockRenderer:
+
+```astro
+---
+import { getCollection } from 'astro:content';
+import TinaIsland from '@tinacms/astro/TinaIsland.astro';
+import { requestWithMetadata, tinaField } from '@tinacms/astro';
+import { client } from '../../tina/__generated__/client';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import BlockRenderer from '../components/BlockRenderer.astro';
+import { getEntry } from 'astro:content';
+
+export async function getStaticPaths() {
+  const pages = await getCollection('pages');
+  return pages.map((page) => ({
+    params: { slug: page.id === 'index' ? undefined : page.id },
+    props: { page },
+  }));
+}
+
+const { page } = Astro.props;
+const data = page.data;
+
+// Fetch the same document via Tina client for visual editing metadata
+const tinaResult = await requestWithMetadata(
+  (client as any).queries.page({ relativePath: `${page.id}.md` }),
+  { priority: 'primary' }
+);
+const tinaPage = (tinaResult.data as any)?.page;
+const blocksField = tinaPage ? tinaField(tinaPage, 'blocks') : undefined;
+---
+
+<BaseLayout title={data.title} description={data.description}>
+  <TinaIsland
+    name="page"
+    wrapper={{ tag: 'main', className: 'flex-1' }}
+    params={{ relativePath: `${page.id}.md` }}
+  >
+    {data.blocks?.map((block, i) => (
+      <BlockRenderer block={block} tinaField={tinaField} index={i} />
+    ))}
+  </TinaIsland>
+</BaseLayout>
+```
+
+### Settings: loading global config
+
+```astro
+---
+// In BaseLayout.astro or any component that needs site settings
+import { getEntry } from 'astro:content';
+const settings = await getEntry('settings', 'site');
+const nav = settings?.data.nav ?? [];
+const footerLinks = settings?.data.footerLinks ?? [];
+---
+```
+
+### Reference fields (linking between collections)
+
+TinaCMS supports `type: 'reference'` to link entries across collections:
+
+```ts
+// In tina/config.ts, inside a block or collection fields:
+{
+  name: 'featuredMember',
+  type: 'reference',
+  collections: ['member'],  // points to the member collection
+  label: 'Featured Team Member',
+}
+```
+
+For a list of references:
+```ts
+{
+  name: 'team',
+  type: 'reference',
+  collections: ['member'],
+  list: true,
+  label: 'Team Members',
+}
+```
+
+In Astro, resolve the reference by fetching the referenced entry:
+```astro
+---
+const memberEntry = await getEntry('members', data.featuredMember);
+---
+```
+
+### Content entry format for block-based pages
+
+A page entry (`src/content/pages/index.md`) with blocks looks like:
+
+```yaml
+---
+title: "Home"
+description: "Welcome to our site"
+blocks:
+  - _template: hero
+    title: "Building Beautiful Sites"
+    subtitle: "From concept to launch, we handle every detail."
+    ctaText: "Get Started"
+    ctaHref: "/contact"
+  - _template: features
+    heading: "What We Do"
+    items:
+      - title: "Design"
+        description: "Pixel-perfect, brand-driven design."
+        icon: "palette"
+      - title: "Development"
+        description: "Fast, accessible, SEO-optimized code."
+        icon: "code"
+  - _template: cta
+    heading: "Ready to start?"
+    body: "Let's build something great together."
+    buttonText: "Contact Us"
+    buttonHref: "/contact"
+---
+```
+
+### Key rules for complex sites
+
+1. **Every collection has `ui.router`** — so clicking a document in the admin opens the right page in the preview iframe.
+2. **Block `_template` field** — TinaCMS auto-adds `_template` to discriminated block objects. The Astro Zod schema must use `z.discriminatedUnion('_template', [...])` to match.
+3. **Settings collection uses `format: 'json'`** — singleton-style config doesn't need markdown body. Use `*.json` and `glob({ pattern: '*.json' })` in the loader.
+4. **One `[...slug].astro` route** handles all pages — no need for separate `about.astro`, `contact.astro` files. Each page is a content entry.
+5. **Reference fields** create foreign-key-like links between collections. Always provide `collections: ['name']` to constrain which collections can be referenced.
+6. **Image fields** in blocks use `type: 'image'` in Tina and `z.string()` in Zod. The value is a file path relative to `publicFolder`.
+7. **Rich-text fields** use `type: 'rich-text'` in Tina and `z.any()` in Zod (the value is a rich-text AST object).
+
+---
+
+## 10. Quick Anti-Pattern Checklist
 
 Before submitting code, verify NONE of these exist:
 
@@ -560,7 +1271,7 @@ Before submitting code, verify NONE of these exist:
 - [ ] `<img>` → REPLACE with `<Image>` from `astro:assets`
 - [ ] `@astrojs/tailwind` → REPLACE with `@tailwindcss/vite`
 - [ ] `output: 'hybrid'` → REPLACE with `output: 'static'`
-- [ ] Tina config without `authProvider: new LocalAuthProvider()` → ADD it; never allow TinaCloud sign-in fallback
+- [ ] Tina config without `authProvider: new PasswordAuthProvider()` → ADD it; never use `LocalAuthProvider` or allow TinaCloud sign-in fallback
 - [ ] Tina collections without `ui.router` → ADD route mapping so content opens the visual editor
 - [ ] Tina-rendered text/media without `data-tina-field` → ADD `tinaField()` markers to visible editable HTML elements
 - [ ] Tina data queries not wrapped in `requestWithMetadata()` → WRAP them or visual preview cannot map forms/fields
@@ -722,4 +1433,4 @@ The validator exempts these from the `data-tina-field` requirement.
 
 ### Media Store Configuration
 
-Tina media uploads commit files to the Git repository via the Gitea provider. The default upload path is `public/media/`. Ensure `.gitignore` does NOT exclude `public/media/`. The `tina/config.ts` `build.publicFolder: 'public'` setting controls where Tina writes uploaded media.
+Tina media uploads commit files to the Git repository via the Gitea provider. The default upload path is `public/media/`. Ensure `.gitignore` does NOT exclude `public/media/`. Note: `build.publicFolder` in `tina/config.ts` is set to `"."` (project root) so the admin SPA lands at `./admin/` — this is NOT the media upload folder. Media uploads go to `public/media/` regardless of `publicFolder` (Tina's media path is configured via the media store, not `build.publicFolder`).

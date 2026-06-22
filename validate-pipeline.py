@@ -24,7 +24,8 @@ except ImportError:
     HAVE_JSONSCHEMA = False
 
 import os
-_BASE = Path(__file__).resolve().parent.parent
+_HERE = Path(__file__).resolve().parent
+_BASE = _HERE if (_HERE / 'agents' / 'astro-static' / 'schemas').exists() else _HERE.parent
 _DEFAULT_SCHEMA_DIR = _BASE / 'agents' / 'astro-static' / 'schemas'
 SCHEMA_DIR = Path(os.environ.get('ASTRO_STATIC_SCHEMA_DIR', _DEFAULT_SCHEMA_DIR))
 
@@ -118,6 +119,12 @@ def _phases_for(profile: str) -> dict[str, dict[str, Any]]:
             'optional': {'02-image-shot-list.json'} | video_shot_list,
             'check_theme': True, 'check_layout': True, 'check_asset_paths': True,
             'strict': True, 'description': 'Full post-build validation',
+        },
+        'instagram': {
+            'required': set(),
+            'optional': set(),
+            'check_theme': False, 'check_layout': False, 'check_asset_paths': False,
+            'strict': False, 'description': 'Instagram extraction gate (00-instagram/)',
         },
     }
 
@@ -362,7 +369,7 @@ def _format_jsonschema_path(absolute_path: Any) -> str:
 
 def validate_with_jsonschema(value: Any, schema: dict[str, Any], issues: list[Issue], artifact: str) -> None:
     """Full jsonschema validation — supports oneOf/anyOf/allOf, format, pattern, additionalProperties:false."""
-    validator = Draft202012Validator(schema)
+    validator = Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
     for err in sorted(validator.iter_errors(value), key=lambda e: e.path):
         path = _format_jsonschema_path(err.absolute_path)
         # err.message already contains enough detail (e.g. "None is not of type 'string'")
@@ -409,6 +416,56 @@ def validate_value(value: Any, schema: dict[str, Any], root: dict[str, Any], pat
         validate_with_fallback(value, schema, root, path, issues, artifact)
 
 
+SECRET_ARTIFACTS = {'vps-connection.json', 'bootstrap-result.json'}
+
+
+def validate_secret_permissions(artifact_path: Path, artifact_name: str, issues: list[Issue]) -> None:
+    """Secret-bearing pipeline artifacts must never be group/world-readable."""
+    try:
+        mode = artifact_path.stat().st_mode & 0o777
+    except OSError as exc:
+        issues.append(Issue('error', artifact_name, f'cannot stat secret file permissions: {exc}'))
+        return
+    if mode != 0o600:
+        issues.append(Issue(
+            'error', artifact_name,
+            f'secret file permissions must be 0600, got {mode:04o}; chmod 0600 {artifact_name}',
+        ))
+
+
+def validate_safe_relative_artifact_path(
+    project_root: Path,
+    artifact_name: str,
+    logical_path: str,
+    path_value: str,
+    issues: list[Issue],
+) -> Path | None:
+    """Return resolved target when path stays inside project_root; otherwise emit an error."""
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        issues.append(Issue(
+            'error', artifact_name,
+            f'unsafe artifact path at {logical_path}: absolute paths are not allowed: {path_value}',
+        ))
+        return None
+    if '..' in candidate.parts:
+        issues.append(Issue(
+            'error', artifact_name,
+            f'unsafe artifact path at {logical_path}: path traversal is not allowed: {path_value}',
+        ))
+        return None
+    try:
+        target = (project_root / candidate).resolve()
+        target.relative_to(project_root.resolve())
+    except ValueError:
+        issues.append(Issue(
+            'error', artifact_name,
+            f'unsafe artifact path at {logical_path}: resolved path escapes project root: {path_value}',
+        ))
+        return None
+    return target
+
+
 def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str, schema_name: str, issues: list[Issue], missing_is_error: bool, check_asset_paths: bool) -> None:
     artifact_path = pipeline_dir / artifact_name
     schema_path = SCHEMA_DIR / schema_name
@@ -435,6 +492,9 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
 
     validate_value(data, schema, schema, '$', issues, artifact_name)
 
+    if artifact_name in SECRET_ARTIFACTS:
+        validate_secret_permissions(artifact_path, artifact_name, issues)
+
     if artifact_name == '02-asset-manifest.json' and isinstance(data, dict) and check_asset_paths:
         for key_path in [
             ('logo', 'primary_path'),
@@ -454,12 +514,15 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
                     break
                 node = node[key]
             if isinstance(node, str):
-                target = project_root / node
-                if not target.exists():
+                logical_path = '.'.join(key_path)
+                target = validate_safe_relative_artifact_path(project_root, artifact_name, logical_path, node, issues)
+                if target is not None and not target.exists():
                     issues.append(Issue('error', artifact_name, f'{".".join(key_path)} points to missing file: {target}'))
         font_config = data.get('font_config')
-        if isinstance(font_config, str) and not (project_root / font_config).exists():
-            issues.append(Issue('error', artifact_name, f'font_config points to missing file: {project_root / font_config}'))
+        if isinstance(font_config, str):
+            font_target = validate_safe_relative_artifact_path(project_root, artifact_name, 'font_config', font_config, issues)
+            if font_target is not None and not font_target.exists():
+                issues.append(Issue('error', artifact_name, f'font_config points to missing file: {font_target}'))
 
     if artifact_name == '01-creative-brief.json' and isinstance(data, dict):
         if data.get('_requires_human_confirmation') is True:
@@ -493,8 +556,14 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
                     issues.append(Issue('warning', artifact_name,
                         f'content_images entry uses legacy `output_path` key; rename to `path`: id={img.get("id", "?")}'))
                 if isinstance(path_value, str):
-                    target = project_root / path_value
-                    if not target.exists():
+                    target = validate_safe_relative_artifact_path(
+                        project_root,
+                        artifact_name,
+                        f'content_images[{img.get("id", "?")}].path',
+                        path_value,
+                        issues,
+                    )
+                    if target is not None and not target.exists():
                         status = img.get('status', '')
                         if status != 'failed':
                             issues.append(Issue('warning', artifact_name,
@@ -513,11 +582,19 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
                 output_path = video.get('output_path')
                 poster_path = video.get('poster_path')
                 if isinstance(output_path, str) and status == 'generated':
-                    video_target = project_root / output_path
+                    video_target = validate_safe_relative_artifact_path(
+                        project_root,
+                        artifact_name,
+                        f'video_backgrounds[{video.get("id", "?")}].output_path',
+                        output_path,
+                        issues,
+                    )
                     if not output_path.startswith('public/videos/'):
                         issues.append(Issue('error', artifact_name,
                             f'generated video must live under public/videos/: id={video.get("id", "?")} output_path={output_path}'))
-                    if not video_target.exists():
+                    if video_target is None:
+                        pass
+                    elif not video_target.exists():
                         issues.append(Issue('error', artifact_name,
                             f'generated video missing: id={video.get("id", "?")} output_path={output_path}'))
                     elif video_target.stat().st_size <= 100 * 1024:
@@ -531,10 +608,48 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
                     if lower_poster.endswith(('.mp4', '.mov', '.m4v', '.webm')):
                         issues.append(Issue('error', artifact_name,
                             f'video poster_path must not be a video file: id={video.get("id", "?")} poster_path={poster_path}'))
-                    poster_target = project_root / poster_path
-                    if status == 'generated' and not poster_target.exists():
+                    poster_target = validate_safe_relative_artifact_path(
+                        project_root,
+                        artifact_name,
+                        f'video_backgrounds[{video.get("id", "?")}].poster_path',
+                        poster_path,
+                        issues,
+                    )
+                    if status == 'generated' and poster_target is not None and not poster_target.exists():
                         issues.append(Issue('error', artifact_name,
                             f'video poster_path points to missing file: id={video.get("id", "?")} poster_path={poster_path}'))
+
+        # HyperFrames hero video check: generated by Phase 3.8 (default-on, zero-cost).
+        # Must exist at public/videos/hero-intro.mp4 and be a valid MP4 over 100 KB.
+        hf_hero = data.get('hyperframes_hero')
+        if isinstance(hf_hero, dict):
+            hf_path = hf_hero.get('path')
+            if isinstance(hf_path, str):
+                hf_target = validate_safe_relative_artifact_path(project_root, artifact_name, 'hyperframes_hero.path', hf_path, issues)
+                if not hf_path.startswith('public/videos/'):
+                    issues.append(Issue('error', artifact_name,
+                        f'hyperframes_hero video must live under public/videos/: path={hf_path}'))
+                if hf_target is None:
+                    pass
+                elif not hf_target.exists():
+                    issues.append(Issue('warning', artifact_name,
+                        f'hyperframes_hero video missing (Phase 3.8 may have been skipped): path={hf_path}'))
+                elif hf_target.stat().st_size <= 100 * 1024:
+                    issues.append(Issue('error', artifact_name,
+                        f'hyperframes_hero video too small (< 100 KB): path={hf_path} size={hf_target.stat().st_size}'))
+                elif not hf_path.lower().endswith('.mp4'):
+                    issues.append(Issue('error', artifact_name,
+                        f'hyperframes_hero video must be MP4: path={hf_path}'))
+            hf_template = hf_hero.get('template')
+            if hf_template and isinstance(hf_template, str) and hf_template not in (
+                'kinetic-type', 'swiss-grid', 'warm-grain', 'blank',
+            ):
+                issues.append(Issue('warning', artifact_name,
+                    f'hyperframes_hero template unknown: {hf_template} (expected one of kinetic-type, swiss-grid, warm-grain, blank)'))
+            hf_intensity = hf_hero.get('intensity')
+            if hf_intensity and isinstance(hf_intensity, str) and hf_intensity not in ('subtle', 'moderate'):
+                issues.append(Issue('warning', artifact_name,
+                    f'hyperframes_hero intensity unknown: {hf_intensity} (expected subtle or moderate)'))
 
 
 
@@ -580,6 +695,58 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
     for artifact, schema in OPTIONAL_ARTIFACTS.items():
         if (pipeline_dir / artifact).exists():
             validate_artifact(project_root, pipeline_dir, artifact, schema, issues, missing_is_error=True, check_asset_paths=False)
+
+    # ── Instagram extraction validation ───────────────────────────────
+    if phase_name == 'instagram':
+        ig_dir = pipeline_dir / '00-instagram'
+        if ig_dir.exists():
+            # profile.json must exist and parse
+            profile_file = ig_dir / 'profile.json'
+            if profile_file.exists():
+                try:
+                    profile_data = json.loads(profile_file.read_text())
+                    if not isinstance(profile_data, dict):
+                        issues.append(Issue('error', '00-instagram/profile.json', 'root must be a JSON object'))
+                    else:
+                        for field in ['schema_version', 'profile', 'extraction_metadata']:
+                            if field not in profile_data:
+                                issues.append(Issue('error', '00-instagram/profile.json', f'missing required field: {field}'))
+                        profile = profile_data.get('profile', {})
+                        if isinstance(profile, dict):
+                            if not profile.get('username'):
+                                issues.append(Issue('error', '00-instagram/profile.json', 'profile.username is empty'))
+                            if not profile.get('display_name'):
+                                issues.append(Issue('warning', '00-instagram/profile.json', 'profile.display_name is empty'))
+                        posts = profile_data.get('posts', [])
+                        if isinstance(posts, list) and len(posts) == 0:
+                            issues.append(Issue('warning', '00-instagram/profile.json', 'no posts extracted'))
+                        extraction = profile_data.get('extraction_metadata', {})
+                        if isinstance(extraction, dict) and not extraction.get('stealth_used', True):
+                            issues.append(Issue('warning', '00-instagram/profile.json', 'extraction did not use stealth — data may be incomplete'))
+                except (json.JSONDecodeError, OSError) as exc:
+                    issues.append(Issue('error', '00-instagram/profile.json', f'cannot parse: {exc}'))
+            else:
+                issues.append(Issue('error', '00-instagram/', 'profile.json missing — Instagram extraction did not complete'))
+
+            # Check downloaded assets exist
+            assets_dir = ig_dir / 'assets'
+            if assets_dir.exists():
+                asset_files = list(assets_dir.glob('*'))
+                if not asset_files:
+                    issues.append(Issue('warning', '00-instagram/assets/', 'no downloaded images'))
+                else:
+                    for f in asset_files:
+                        if f.stat().st_size < 1024:
+                            issues.append(Issue('warning', str(f.relative_to(pipeline_dir)), f'image too small ({f.stat().st_size} bytes) — may be an error page'))
+            else:
+                issues.append(Issue('warning', '00-instagram/', 'assets/ directory missing — no images downloaded'))
+
+            # Check extraction report
+            report = ig_dir / 'extraction-report.md'
+            if not report.exists():
+                issues.append(Issue('warning', '00-instagram/', 'extraction-report.md missing'))
+        else:
+            issues.append(Issue('error', '00-instagram/', 'directory missing — Instagram extraction phase did not run'))
 
     theme_css = project_root / 'src/styles/theme.css'
     if check_theme:
@@ -638,10 +805,23 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                 tina_content = tina_config.read_text()
                 if 'contentApiUrlOverride' not in tina_content:
                     issues.append(Issue('error', 'tina/config.ts', 'self-hosted TinaCMS config must set contentApiUrlOverride'))
-                if 'authProvider' not in tina_content or 'LocalAuthProvider' not in tina_content:
-                    issues.append(Issue('error', 'tina/config.ts', 'self-hosted TinaCMS config must set authProvider with LocalAuthProvider to avoid TinaCloud sign-in'))
+                if 'LocalAuthProvider' in tina_content:
+                    issues.append(Issue('error', 'tina/config.ts', 'LocalAuthProvider is not allowed in production astro-static; use the PasswordAuthProvider contract'))
+                if 'authProvider' not in tina_content or 'PasswordAuthProvider' not in tina_content:
+                    issues.append(Issue('error', 'tina/config.ts', 'self-hosted TinaCMS config must set authProvider with PasswordAuthProvider'))
                 if 'router:' not in tina_content:
                     issues.append(Issue('error', 'tina/config.ts', 'maximum TinaCMS visual editing requires collection ui.router entries that open the live preview route'))
+                # Check build config — publicFolder must be "." so admin SPA
+                # lands at ./admin/ (project root), not inside dist/client/
+                # which gets wiped by astro build.
+                if 'publicFolder' in tina_content and 'dist/client' in tina_content:
+                    issues.append(Issue('error', 'tina/config.ts', 'build.publicFolder must be "." not "dist/client" — admin SPA must live at project root to survive astro build'))
+                # Check that collection paths match Astro content directories
+                tina_paths = re.findall(r'path:\s*["\']src/content/(\w+)["\']', tina_content)
+                for tina_path in tina_paths:
+                    content_dir = project_root / 'src' / 'content' / tina_path
+                    if not content_dir.exists():
+                        issues.append(Issue('error', 'tina/config.ts', f'TinaCMS collection path "src/content/{tina_path}" does not exist — directory missing'))
             if not astro_config.exists():
                 issues.append(Issue('error', 'astro.config.mjs', 'TinaCMS dependency present but astro.config.mjs is missing'))
             else:
@@ -658,6 +838,18 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                 issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'missing Tina visual editing island route'))
             if not api_route.exists():
                 issues.append(Issue('error', 'src/pages/api/tina/[...routes].ts', 'missing Tina self-hosted GraphQL route'))
+            else:
+                api_content = api_route.read_text()
+                required_route_markers = [
+                    ('POST /api/tina/login', '/api/tina/login'),
+                    ('POST /api/tina/logout', '/api/tina/logout'),
+                    ('GET /api/tina/auth-check', '/api/tina/auth-check'),
+                    ('tina_admin_session cookie', 'tina_admin_session'),
+                    ('PasswordBackendAuthProvider', 'PasswordBackendAuthProvider'),
+                ]
+                for label, marker in required_route_markers:
+                    if marker not in api_content:
+                        issues.append(Issue('error', 'src/pages/api/tina/[...routes].ts', f'missing Tina password auth backend contract: {label}'))
             project_source_files = []
             source_texts = []
             src_root = project_root / 'src'

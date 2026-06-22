@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/00-instagram-extraction.schema.json",
+  "title": "Astro Static Instagram Extraction Output",
+  "description": "Validates pipeline/00-instagram/profile.json — the primary extraction artifact produced by astro-static/instagram-extractor.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "extracted_at",
+    "source_url",
+    "profile",
+    "extraction_metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "astro-static-instagram/v1"
+    },
+    "extracted_at": {
+      "type": "string",
+      "description": "ISO 8601 timestamp of extraction"
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "profile": {
+      "type": "object",
+      "required": ["username", "display_name", "followers", "posts_count"],
+      "properties": {
+        "username": {"type": "string"},
+        "display_name": {"type": "string"},
+        "bio": {"type": "string"},
+        "verified": {"type": "boolean"},
+        "profile_image_url": {"type": "string"},
+        "profile_image_local": {"type": "string"},
+        "followers": {"type": "integer", "minimum": 0},
+        "following": {"type": "integer", "minimum": 0},
+        "posts_count": {"type": "integer", "minimum": 0},
+        "external_url": {"type": "string"},
+        "account_category": {"type": "string"},
+        "story_highlights": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "cover_local": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "posts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url", "type"],
+        "properties": {
+          "url": {"type": "string"},
+          "type": {"type": "string", "enum": ["image", "reel", "carousel"]},
+          "thumbnail_url": {"type": "string"},
+          "thumbnail_local": {"type": "string"},
+          "caption": {"type": "string"},
+          "likes": {"type": "integer"},
+          "comments": {"type": "integer"},
+          "posted_at": {"type": "string"},
+          "alt_text": {"type": "string"}
+        }
+      }
+    },
+    "extraction_metadata": {
+      "type": "object",
+      "required": ["method", "stealth_used"],
+      "properties": {
+        "method": {"type": "string"},
+        "stealth_used": {"type": "boolean"},
+        "stealth_reason": {"type": "string"},
+        "extraction_duration_seconds": {"type": "number"},
+        "anti_bot_challenges": {"type": "integer"},
+        "login_wall_encountered": {"type": "boolean"},
+        "login_wall_blocked_content": {"type": "boolean"}
+      }
+    }
+  },
+  "additionalProperties": true
+}

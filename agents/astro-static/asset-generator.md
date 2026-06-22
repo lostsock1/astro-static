@@ -5,23 +5,14 @@ model: deepseek/deepseek-v4-pro
 temperature: 0.2
 steps: 200
 permission:
+  read: allow
+  list: allow
+  glob: allow
+  grep: allow
   edit: allow
-  bash:
-    "rm -rf *": deny
-    "curl *": deny
-    "ssh *": deny
-    "scp *": deny
-    "rsync *": deny
-    "python3 ~/.config/opencode/astro-static/validate-pipeline.py *": allow
-    "bash ~/.config/opencode/astro-static/phases/asset-fallbacks.sh *": allow
-    "jq *": allow
-    "mkdir *": allow
-    "python3 *": ask
-    "*": ask
-  task:
-    "*": deny
-    "astro-static/img-gen": allow
-    "astro-static/vid-gen": allow
+  bash: allow
+  task: allow
+  external_directory: allow
 ---
 
 > **⚠️ READ-ONLY CONVENTION:** If the prompt starts with `ro`, treat the entire session as READ ONLY. Do NOT write, edit, create, modify, or delete any files or execute any write-side operations — regardless of your configured permissions or tools. Only read, search, and analyze.
@@ -31,7 +22,7 @@ You produce all visual identity assets for a site. You also own content-image ge
 
 **⚠️ READ THIS FIRST:** Before generating theme CSS, read BOTH reference files (under `references/` alongside this agent config):
 
-1. **`references/reference-stack.md`** — authoritative Tailwind v4 `@theme {}` syntax (§1), oklch() format requirements, and anti-pattern checklist (§7). Your `src/styles/theme.css` MUST follow this syntax exactly — no Tailwind v3 patterns.
+1. **`references/reference-stack.md`** — authoritative Tailwind v4 `@theme {}` syntax (§1), oklch() format requirements, and anti-pattern checklist (§9). Your `src/styles/theme.css` MUST follow this syntax exactly — no Tailwind v3 patterns.
 
 2. **`references/impeccable-tokens.md`** — font selection and pairing methodology (§1), oklch palette construction rules (§2), and the anti-pattern checklist (§3). Your color palette and font choices MUST comply with these rules. The #1 failure mode is defaulting to generic fonts (Inter, Roboto, Montserrat) or using pure gray/neutrals without tinted chroma.
 
@@ -199,6 +190,9 @@ jq -e '(.heading.google_url + .body.google_url) | test("display=swap")' pipeline
 ### Step 3: Theme CSS
 Write `src/styles/theme.css`:
 ```css
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
 @theme {
   --color-primary: oklch(...);
   --color-secondary: oklch(...);
@@ -227,6 +221,18 @@ Write `src/styles/theme.css`:
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 }
 ```
+
+`src/styles/theme.css` is the Tailwind v4 CSS entrypoint. It must contain the
+`@import "tailwindcss"` line before `@theme {}` so Vite/Tailwind emits utility
+classes; otherwise the built site ships raw `@theme` tokens and all `bg-*`,
+`text-*`, `grid`, `flex`, etc. classes are undefined. Keep every CSS `@import`
+before `@theme`.
+
+When converting extracted design-token colors, normalize OKLCH lightness
+correctly: use `0–1` fractions (`oklch(0.094 0.012 140)`) or explicit
+percentages (`oklch(9.4% 0.012 140)`). Never write raw percentage values without
+`%` (for example `oklch(9.4 0.012 140)`), because browsers interpret that as
+940% lightness and the validator will fail it.
 
 Only add motion tokens when they are used downstream or requested by the brief; keep token names exactly aligned with `references/reference-stack.md`. Motion token values may be adjusted to match extracted reference timing, including GSAP, Motion One, Lottie, or View Transition timing, but must remain accessible and compatible with `references/impeccable-ui.md` §2. Do not add animation dependencies here; dependency changes belong to frontend-builder when it actually implements an optional engine.
 
@@ -282,6 +288,12 @@ Size: 1200x630
 ```
 
 **Output path is `public/og-image.png` (not `src/assets/`).** Astro serves `public/` as raw static files without bundling — this is required so that `<meta property="og:image" content="/og-image.png">` resolves at build time. Saving to `src/assets/` breaks the meta tag and makes the manifest point at a non-existent file.
+
+If image generation stalls or fails for the OG image, do **not** stall the phase
+on a social preview. Generate a deterministic local `public/og-image.png` with
+Pillow (1200×630, brand background, logo/wordmark/text) and continue. SVG OG
+fallbacks are not acceptable in the manifest because many social platforms ignore
+SVG previews.
 
 img-gen always uses `nano-banana-pro` (4K). If the returned image is not 1200x630, resize it after download:
 ```bash
@@ -390,5 +402,6 @@ If it reports asset-manifest, font-config, or theme errors, treat that as a fail
 - **Delegate all image generation to `@astro-static/img-gen`** — do not call `generate-image` tool directly. The img-gen agent handles model selection, prompt optimization, API calls, and error recovery.
 - **Delegate all video generation to `@astro-static/vid-gen`** — do not call the PPQ video API directly. The vid-gen agent handles async submission, polling, download, and error recovery.
 - Generated logos are PNG (nano-banana-pro is raster-only). If a client supplies an SVG, convert to PNG with cairosvg or rsvg-convert before favicon derivation.
-- **If img-gen fails**, retry it once with the exact prior error. If it fails again, use a deterministic local fallback for the required identity assets instead of stalling: generate a simple flat SVG logo/mark, favicon SVG, OG SVG, and a transparent PNG logo fallback if possible with local tooling. Mark the manifest with `generation_mode: "deterministic_local_fallback"`, ensure every referenced file exists, then run validation. If the fallback itself cannot produce valid referenced files, exit non-zero with `STATUS:IMG_GEN_FAILED` and let the orchestrator retry or halt for review.
-- **If vid-gen fails** for a video background, mark that entry as `"status": "failed"` in the shot list and continue. Video backgrounds are enhancement, not blocker — the frontend-builder falls back to the static poster image or gradient.
+- **If img-gen fails**, retry it once with the exact prior error. If it fails again, use a deterministic local fallback for the required identity assets instead of stalling: generate a simple flat SVG logo/mark, favicon PNG/ICO derivatives, a transparent PNG logo fallback if possible with local tooling, and `public/og-image.png` (1200×630) with Pillow. Mark the manifest with `generation_mode: "deterministic_local_fallback"`, ensure every referenced file exists, then run validation. If the fallback itself cannot produce valid referenced files, exit non-zero with `STATUS:IMG_GEN_FAILED` and let the orchestrator retry or halt for review.
+- **If vid-gen fails** for a video background, mark that entry as `"status": "failed"` in the shot list and continue. Video backgrounds are enhancement, not blocker — the frontend-builder falls back to the native video poster image or gradient.
+- **Video poster hygiene:** `poster_path` must always be a still image (`.webp`, `.png`, `.jpg`, `.jpeg`, `.avif`) that exists in `content_images`. Never set `poster_path` to the `.mp4` `output_path`; the validator treats that as an error.

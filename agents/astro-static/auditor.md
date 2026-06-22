@@ -125,11 +125,12 @@ When a project uses optional engines, report these explicitly:
 When `pipeline/02-asset-manifest.json` contains a non-empty `video_backgrounds` array, report these explicitly:
 
 - Every entry with `status: "generated"` has an `output_path` file that exists on disk and is larger than 100 KB.
-- Every entry with a `poster_path` references a file that exists (from `content_images`).
+- Every entry with a `poster_path` references a still image file that exists (from `content_images`); `poster_path` must not equal the MP4 `output_path` and must not end in `.mp4`/`.mov`/`.m4v`/`.webm`.
 - `VideoBackground.astro` component exists in `src/components/` (or equivalent) when any video backgrounds are in use.
 - Video files are under `public/videos/` (not `src/assets/`) — Astro serves `public/` as raw static files.
 - `package.json` does NOT include video player libraries (Plyr, Video.js, etc.) — native `<video>` only.
-- Reduced-motion handling exists: CSS `@media (prefers-reduced-motion: reduce)` hides or freezes the video; poster image remains visible.
+- Reduced-motion handling exists and does not hide generated clips by default; dimming (`opacity: 0.5`) or freezing is preferred.
+- `VideoBackground.astro` does not render a sibling `<img class="video-bg__poster">` behind the clip; use native `<video poster>` only.
 - Mobile consideration: either a media query or JS check reduces/removes video below a reasonable breakpoint, or the poster image renders acceptably on small screens.
 - Content layout is not dependent on video loading: text and CTA elements have `position: relative; z-index` above the video layer.
 - No more than 2-3 video backgrounds on a single page (bandwidth and performance concern).

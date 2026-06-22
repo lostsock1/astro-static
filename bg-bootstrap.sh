@@ -3,6 +3,7 @@
 # Reads all config from pipeline/vps-connection.json — no variable substitution needed.
 # Called from the project root: bash pipeline/_bg-bootstrap.sh </dev/null >/dev/null 2>&1 &
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -64,37 +65,37 @@ else
     >> "$PROJECT_DIR/pipeline/bootstrap.log"
 fi
 
-# Write a setup wrapper script to /tmp on VPS that handles env vars safely.
-# This avoids inline shell escaping issues with special chars in passwords.
-# NOTE: the heredoc is quoted ('WRAPPER'), so local vars below are NOT expanded
-# on the local side — they expand on the VPS from the \"${…}\" interpolations
-# our outer $SSH fed through. GITEA_PASS carries the per-project random value
-# written to vps-connection.json above.
+# Write a setup wrapper script with mode 0600 locally, then upload it with
+# owner-only permissions. Values are shell-escaped with printf %q instead of
+# interpolated into a remote heredoc, so JSON-controlled fields cannot inject
+# root commands and the secret-bearing wrapper is never world-readable.
 GITEA_USER=$(jq -r '.gitea_user // "siteadmin"' "$VPS_JSON")
-$SSH "cat > /tmp/pipeline-setup-wrapper.sh << 'WRAPPER'
-#!/usr/bin/env bash
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-export PROJECT_NAME=\"${PROJECT}\"
-export GITEA_ADMIN_USER=\"${GITEA_USER}\"
-export GITEA_ADMIN_PASS=\"${GITEA_PASS}\"
-export GITEA_ADMIN_EMAIL=\"admin@localhost\"
-export DOMAIN=\"auto\"
+[[ "$GITEA_USER" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || { echo "STATUS:INVALID_VPS_CONFIG reason=bad_gitea_user"; exit 2; }
+[[ "$GITEA_PASS" =~ ^[A-Za-z0-9_-]{16,128}$ ]] || { echo "STATUS:INVALID_VPS_CONFIG reason=bad_gitea_pass"; exit 2; }
 
-# Clean previous state files (owned by us now, not root)
-rm -f /tmp/setup-vps.exit /tmp/setup-vps.log /tmp/pipeline-result.json
+LOCAL_WRAPPER=$(mktemp "$PROJECT_DIR/pipeline/setup-wrapper.XXXXXX")
+chmod 600 "$LOCAL_WRAPPER"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'set -euo pipefail'
+  printf '%s\n' 'umask 077'
+  printf '%s\n' 'export DEBIAN_FRONTEND=noninteractive'
+  printf 'export PROJECT_NAME=%q\n' "$PROJECT"
+  printf 'export GITEA_ADMIN_USER=%q\n' "$GITEA_USER"
+  printf 'export GITEA_ADMIN_PASS=%q\n' "$GITEA_PASS"
+  printf '%s\n' 'export GITEA_ADMIN_EMAIL=admin@localhost'
+  printf '%s\n' 'export DOMAIN=auto'
+  printf '%s\n' 'rm -f /tmp/setup-vps.exit /tmp/setup-vps.log /var/lib/site-pipeline/pipeline-result.json'
+  printf '%s\n' 'trap '\''rc=$?; echo "$rc" > /tmp/setup-vps.exit; rm -f /tmp/pipeline-setup-wrapper.sh; exit "$rc"'\'' EXIT'
+  printf '%s\n' 'bash /tmp/setup-vps.sh > /tmp/setup-vps.log 2>&1'
+} > "$LOCAL_WRAPPER"
 
-# Write the exit code via EXIT trap so it fires on *every* exit path:
-# normal exit, set -e abort, SIGTERM from nohup cleanup, SSH session death.
-# Previously this was a post-bash 'echo \$? > ...' line that was skipped
-# whenever setup-vps.sh exited via signal — leaving bg-bootstrap's waiter
-# spinning for its full 1200s budget and the background process alive.
-trap 'echo \$? > /tmp/setup-vps.exit' EXIT
-
-# Run setup, capturing output (exit code is captured by the trap above)
-bash /tmp/setup-vps.sh > /tmp/setup-vps.log 2>&1
-WRAPPER
-chmod +x /tmp/pipeline-setup-wrapper.sh" >> "$PROJECT_DIR/pipeline/bootstrap.log" 2>&1 || true
+scp -P "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new \
+  "$LOCAL_WRAPPER" "$USR@$HOST:/tmp/pipeline-setup-wrapper.sh" \
+  >> "$PROJECT_DIR/pipeline/bootstrap.log" 2>&1 \
+  || { rm -f "$LOCAL_WRAPPER"; echo "STATUS:BOOTSTRAP_SETUP_UPLOAD_FAILED src=setup-wrapper" >> "$PROJECT_DIR/pipeline/bootstrap.log"; exit 1; }
+rm -f "$LOCAL_WRAPPER"
+$SSH "chmod 700 /tmp/pipeline-setup-wrapper.sh" >> "$PROJECT_DIR/pipeline/bootstrap.log" 2>&1 || true
 
 # Launch setup on VPS under nohup so it survives SSH disconnect.
 # Uses the wrapper script instead of inline command — avoids shell escaping bugs.
@@ -111,7 +112,7 @@ echo LAUNCHED" >> "$PROJECT_DIR/pipeline/bootstrap.log" 2>&1 || true
 WAIT_ATTEMPT=0
 WAIT_MAX=3
 WAITED_TOTAL=0
-WAIT_BUDGET=1200   # seconds; matches the old cap
+WAIT_BUDGET=3600   # seconds; 1h cap for slow 1CPU/HDD VMs where apt alone takes 30+ min
 
 while [[ "$WAIT_ATTEMPT" -lt "$WAIT_MAX" ]] && [[ "$WAITED_TOTAL" -lt "$WAIT_BUDGET" ]]; do
   WAIT_ATTEMPT=$((WAIT_ATTEMPT + 1))

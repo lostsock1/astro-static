@@ -90,6 +90,9 @@
       "items": {
         "$ref": "#/$defs/videoBackground"
       }
+    },
+    "hyperframes_hero": {
+      "$ref": "#/$defs/hyperframesHero"
     }
   },
   "$defs": {
@@ -130,6 +133,26 @@
         },
         "fallback": { "type": ["string", "null"] },
         "fallback_reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "hyperframesHero": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "duration_s": { "type": "number" },
+        "resolution": { "type": "string" },
+        "codec": { "type": "string" },
+        "template": {
+          "type": "string",
+          "enum": ["kinetic-type", "swiss-grid", "warm-grain", "blank"]
+        },
+        "intensity": {
+          "type": "string",
+          "enum": ["subtle", "moderate"]
+        },
+        "fonts_used": { "type": "array", "items": { "type": "string" } }
       },
       "additionalProperties": true
     }
