@@ -76,6 +76,27 @@
     "caddy_site_file": {
       "type": "string"
     },
+    "installation_log": {
+      "type": "string",
+      "pattern": "^/var/lib/site-pipeline/(install-[a-z0-9][a-z0-9-]{0,62}-[0-9TZ]+\\.log|latest-install\\.log)$"
+    },
+    "installation_summary": {
+      "type": "string",
+      "pattern": "^/var/lib/site-pipeline/installation-summary-[a-z0-9][a-z0-9-]{0,62}\\.md$"
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at", "kind", "message"],
+        "properties": {
+          "at": { "type": "string" },
+          "kind": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
     "generated_at": {
       "type": "string"
     }

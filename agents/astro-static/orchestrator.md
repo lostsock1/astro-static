@@ -369,6 +369,10 @@ esac
 
 `phases/bootstrap-join.sh` waits for the background job, validates the exit file (with VPS-probe fallback for `/var/lib/site-pipeline/bootstrapped`), fetches `/var/lib/site-pipeline/pipeline-result.json` over an owner-only `sudo cat` channel, validates it, merges it into `vps-connection.json`, confirms Node/Caddy/Gitea services + Caddy config + authenticated Gitea HTTP 200, and marks `0_bootstrap_launch` completed in the state file. On any non-OK status, completed local outputs are still on disk — re-running the orchestrator resumes from the join.
 
+The join also fetches the mandatory installation artifacts when present:
+- `pipeline/installation.log` — full setup-vps stdout/stderr from the VPS, mode `0600`.
+- `pipeline/installation-summary.md` — URLs, credentials, and recorded warnings/errors/inefficiencies/manual follow-up points, mode `0600`.
+
 Emitted tokens: `BOOTSTRAP_FAILED`, `BOOTSTRAP_RESULT_INVALID`, `BOOTSTRAP_JOIN_PROBE_FAILED`, `BOOTSTRAP_JOIN_GITEA_AUTH_FAILED`, `BOOTSTRAP_OK`.
 
 ### Phase 1: Design Extraction (Conditional)
@@ -1015,6 +1019,11 @@ After Phase 5 passes, write `pipeline/RESULT.md`:
 
 ## Credentials
 - Credentials are not printed in this report. Authorized operators can read `pipeline/vps-connection.json` on the control node; it must remain mode `0600` and gitignored.
+- Full URL + credential handoff lives in `pipeline/installation-summary.md` when bootstrap produced it; keep it mode `0600` and never paste it into public logs or tickets.
+
+## Installation Diagnostics
+- Full installation log: `pipeline/installation.log` when available.
+- Summary of installation warnings, errors, inefficiencies, bugs, and manual follow-up points: `pipeline/installation-summary.md` when available.
 
 ## Generated Pages
 | Page | URL | Status |

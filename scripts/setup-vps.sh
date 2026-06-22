@@ -135,14 +135,95 @@ BOOTSTRAP_MARKER="${STATE_DIR}/bootstrapped"
 PROJECT_STATE_DIR="${STATE_DIR}/projects"
 PROJECT_MARKER="${PROJECT_STATE_DIR}/${PROJECT_NAME}"
 RESULT_PATH="${STATE_DIR}/pipeline-result.json"
-
-# --- Helpers ---
-log()  { echo "[OK] $*"; }
-warn() { echo "[!!] $*"; }
-err()  { echo "[ERR] $*" >&2; }
-skip() { echo "[--] $*"; }
+INSTALL_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+INSTALL_LOG_PATH="${STATE_DIR}/install-${PROJECT_NAME}-${INSTALL_STAMP}.log"
+SUMMARY_PATH="${STATE_DIR}/installation-summary-${PROJECT_NAME}.md"
+DIAGNOSTICS_PATH="${STATE_DIR}/installation-diagnostics-${PROJECT_NAME}-${INSTALL_STAMP}.tsv"
 
 mkdir -p "${STATE_DIR}" "${PROJECT_STATE_DIR}"
+touch "$INSTALL_LOG_PATH" "$DIAGNOSTICS_PATH"
+chmod 0600 "$INSTALL_LOG_PATH" "$DIAGNOSTICS_PATH"
+ln -sfn "$INSTALL_LOG_PATH" "${STATE_DIR}/latest-install.log"
+exec > >(tee -a "$INSTALL_LOG_PATH") 2>&1
+
+# --- Helpers ---
+record_diagnostic() {
+  local kind="$1"
+  shift || true
+  printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$kind" "$*" >> "$DIAGNOSTICS_PATH" 2>/dev/null || true
+}
+
+log()  { echo "[OK] $*"; }
+warn() { echo "[!!] $*"; record_diagnostic "warning" "$*"; }
+err()  { echo "[ERR] $*" >&2; record_diagnostic "error" "$*"; }
+skip() { echo "[--] $*"; record_diagnostic "notice" "$*"; }
+
+_diagnostics_json() {
+  python3 - "$DIAGNOSTICS_PATH" <<'PY' 2>/dev/null || printf '[]'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+items = []
+if path.exists():
+    for line in path.read_text(errors="replace").splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) == 3:
+            items.append({"at": parts[0], "kind": parts[1], "message": parts[2]})
+print(json.dumps(items))
+PY
+}
+
+_write_installation_summary() {
+  local exit_code="${1:-0}"
+  local _SITE_DIR="${SITE_DIR:-/var/www/sites/${PROJECT_NAME:-unknown}}"
+  local _SITE_URL="${SITE_URL:-not available}"
+  local _GITEA_PUBLIC_URL="${GITEA_PUBLIC_URL:-not available}"
+  local _GITEA_ADMIN_USER="${GITEA_ADMIN_USER:-siteadmin}"
+  local _GITEA_ADMIN_PASS="${GITEA_ADMIN_PASS:-not available}"
+  local _TINA_ADMIN_PASSWORD="${TINA_ADMIN_PASSWORD:-not available}"
+  local _PROJECT_NAME="${PROJECT_NAME:-unknown}"
+  local _SERVER_IP="${SERVER_IP:-not available}"
+  local _GENERATED_AT
+  _GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  {
+    echo "# astro-static Installation Summary"
+    echo
+    echo "Generated: ${_GENERATED_AT}"
+    echo "Exit code: ${exit_code}"
+    echo "Project: ${_PROJECT_NAME}"
+    echo "Server IP: ${_SERVER_IP}"
+    echo
+    echo "## URLs"
+    echo "- Site: ${_SITE_URL}"
+    echo "- Gitea: ${_GITEA_PUBLIC_URL}"
+    echo "- TinaCMS Admin: ${_SITE_URL%/}/admin/"
+    echo "- TinaCMS Login: ${_SITE_URL%/}/admin/login.html"
+    echo
+    echo "## Credentials"
+    echo "- Gitea username: ${_GITEA_ADMIN_USER}"
+    echo "- Gitea password: ${_GITEA_ADMIN_PASS}"
+    echo "- TinaCMS admin password: ${_TINA_ADMIN_PASSWORD}"
+    echo "- Credential source of truth: ${RESULT_PATH} (0600)"
+    echo
+    echo "## Installation Diagnostics"
+    echo "All warnings, errors, notable skips, inefficiencies, bugs, and manual follow-up points recorded during installation:"
+    if [[ -s "$DIAGNOSTICS_PATH" ]]; then
+      awk -F '\t' '{ printf "- [%s] %s — %s\n", $2, $1, $3 }' "$DIAGNOSTICS_PATH"
+    else
+      echo "- No warnings, errors, inefficiencies, or manual follow-up points were recorded."
+    fi
+    echo
+    echo "## Installation Log"
+    echo "- Full log: ${INSTALL_LOG_PATH}"
+    echo "- Site directory: ${_SITE_DIR}"
+  } > "$SUMMARY_PATH"
+  chmod 0600 "$SUMMARY_PATH" 2>/dev/null || true
+}
+
+log "Installation log initialized: ${INSTALL_LOG_PATH}"
 rm -f "${RESULT_PATH}"
 
 # --- EXIT trap: always write result JSON + fix permissions, even on early failure ---
@@ -172,12 +253,14 @@ _ensure_result_and_perms() {
   fi
   # Write result JSON if not already written (idempotent)
   if [[ ! -f "${RESULT_PATH}" ]]; then
+    _write_installation_summary "$exit_code"
     GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     NODE_VERSION=$(node --version 2>/dev/null || echo NONE)
     BUN_VERSION=$(bun --version 2>/dev/null || echo NONE)
     SYSTEM_BOOTSTRAPPED=$([ -f "$BOOTSTRAP_MARKER" ] && echo YES || echo NO)
     GITEA_REPO_URL="${_GITEA_PUBLIC_URL}/${_GITEA_ADMIN_USER}/${_PROJECT_NAME}.git"
     GITEA_REPO_SSH="ssh://git@${_SERVER_IP}/home/git/gitea-repositories/${_GITEA_ADMIN_USER}/${_PROJECT_NAME}.git"
+    DIAGNOSTICS_JSON="$(_diagnostics_json)"
     jq -n \
       --arg schema_version "astro-static-bootstrap-result/v1" \
       --arg project_name "$_PROJECT_NAME" \
@@ -196,6 +279,9 @@ _ensure_result_and_perms() {
       --arg node_version "$NODE_VERSION" \
       --arg bun_version "$BUN_VERSION" \
       --arg system_bootstrapped "$SYSTEM_BOOTSTRAPPED" \
+      --arg installation_log "$INSTALL_LOG_PATH" \
+      --arg installation_summary "$SUMMARY_PATH" \
+      --argjson diagnostics "$DIAGNOSTICS_JSON" \
       --argjson exit_code "$exit_code" \
       --arg generated_at "$GENERATED_AT" \
       '{
@@ -216,6 +302,9 @@ _ensure_result_and_perms() {
         node_version: $node_version,
         bun_version: $bun_version,
         system_bootstrapped: $system_bootstrapped,
+        installation_log: $installation_log,
+        installation_summary: $installation_summary,
+        diagnostics: $diagnostics,
         exit_code: $exit_code,
         generated_at: $generated_at,
         trap_generated: true
@@ -2308,6 +2397,18 @@ fi
 # Mark project complete
 date -u +"%Y-%m-%dT%H:%M:%SZ site_dir=${SITE_DIR} url=${SITE_URL}" > "$PROJECT_MARKER"
 
+# Final Caddy reload — earlier phases may have skipped reload due to validation
+# failures caused by legacy.caddy conflicts. Now that legacy.caddy is removed
+# (Phase 10) and all fragments are in place, try one more time before writing
+# the final installation summary so any warning is recorded there.
+if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+  systemctl reload caddy 2>/dev/null || systemctl restart caddy
+  log "Final Caddy reload successful — all site fragments active"
+else
+  warn "Final Caddy validation still failing — Caddy may need manual config fix"
+  warn "Run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+fi
+
 # =============================================================================
 # OUTPUT — machine-readable for the control node to parse
 # =============================================================================
@@ -2318,10 +2419,15 @@ SYSTEM_BOOTSTRAPPED=$([ -f "$BOOTSTRAP_MARKER" ] && echo YES || echo NO)
 SYSTEM_PHASES_RUN=$($SYSTEM_NEEDED && echo YES || echo NO)
 GITEA_REPO_URL="${GITEA_PUBLIC_URL}/${GITEA_ADMIN_USER}/${PROJECT_NAME}.git"
 GITEA_REPO_SSH="ssh://git@${SERVER_IP}/home/git/gitea-repositories/${GITEA_ADMIN_USER}/${PROJECT_NAME}.git"
+_write_installation_summary 0
+DIAGNOSTICS_JSON="$(_diagnostics_json)"
 
 jq -n   --arg schema_version "astro-static-bootstrap-result/v1"   --arg project_name "$PROJECT_NAME"   --arg server_ip "$SERVER_IP"   --arg domain "$DOMAIN"   --argjson use_tls "$( [[ "$USE_TLS" == "true" ]] && printf 'true' || printf 'false' )"   --arg site_dir "$SITE_DIR"   --arg site_host "$SITE_HOST"   --arg site_port "${SITE_PORT:-}"   --arg site_url "$SITE_URL"   --arg gitea_url "$GITEA_PUBLIC_URL"   --arg gitea_user "$GITEA_ADMIN_USER"   --arg gitea_repo_url "$GITEA_REPO_URL"   --arg gitea_repo_ssh "$GITEA_REPO_SSH"   --arg node_version "$NODE_VERSION"   --arg bun_version "$BUN_VERSION"   --arg system_bootstrapped "$SYSTEM_BOOTSTRAPPED"   --arg system_phases_run "$SYSTEM_PHASES_RUN"   --arg caddy_site_file "$CADDY_SITE_FILE"   --arg astro_ssr_port "$ASTRO_SSR_PORT"   --arg astro_ssr_unit "astro-ssr-${PROJECT_NAME}" \
   --arg gitea_pass "$GITEA_ADMIN_PASS" \
   --arg tina_admin_password "$TINA_ADMIN_PASSWORD" \
+  --arg installation_log "$INSTALL_LOG_PATH" \
+  --arg installation_summary "$SUMMARY_PATH" \
+  --argjson diagnostics "$DIAGNOSTICS_JSON" \
   --arg generated_at "$GENERATED_AT"   '{
     schema_version: $schema_version,
     project_name: $project_name,
@@ -2345,6 +2451,9 @@ jq -n   --arg schema_version "astro-static-bootstrap-result/v1"   --arg project_
     caddy_site_file: $caddy_site_file,
     astro_ssr_port: ($astro_ssr_port | tonumber),
     astro_ssr_unit: $astro_ssr_unit,
+    installation_log: $installation_log,
+    installation_summary: $installation_summary,
+    diagnostics: $diagnostics,
     generated_at: $generated_at
   }' > "$RESULT_PATH"
 chmod 0600 "$RESULT_PATH"
@@ -2358,19 +2467,10 @@ SITE_URL=${SITE_URL}
 GITEA_URL=${GITEA_PUBLIC_URL}
 GITEA_ADMIN_USER=${GITEA_ADMIN_USER}
 GITEA_ADMIN_PASS=[redacted]
+INSTALLATION_LOG=${INSTALL_LOG_PATH}
+INSTALLATION_SUMMARY=${SUMMARY_PATH}
 PROJECT_NAME=${PROJECT_NAME}
 ===END_RESULT===
 RESULT
-
-# Final Caddy reload — earlier phases may have skipped reload due to validation
-# failures caused by legacy.caddy conflicts. Now that legacy.caddy is removed
-# (Phase 10) and all fragments are in place, try one more time.
-if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
-  systemctl reload caddy 2>/dev/null || systemctl restart caddy
-  log "Final Caddy reload successful — all site fragments active"
-else
-  warn "Final Caddy validation still failing — Caddy may need manual config fix"
-  warn "Run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
-fi
 
 log "VPS setup complete for ${PROJECT_NAME} (system_phases_run=$($SYSTEM_NEEDED && echo yes || echo no))"

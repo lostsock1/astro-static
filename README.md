@@ -164,6 +164,8 @@ All agents use **least-privilege permissions**. Key constraints:
 - `.gitignore` explicitly documents `public/media/` as tracked for Tina media uploads
 - Phases 1–4.2 proceed in parallel/local mode
 - Bootstrap Join (blocking) merges VPS config before Phase 4.3
+- Full installation stdout/stderr is mandatory: `setup-vps.sh` tees to `/var/lib/site-pipeline/install-<project>-<timestamp>.log`, and Bootstrap Join fetches it to `pipeline/installation.log`.
+- A secure owner-only `pipeline/installation-summary.md` includes URLs, credentials, warnings, errors, inefficiencies, bugs, and manual follow-up points for operator handoff.
 
 ### Phase 1: Design Extraction (Conditional)
 - Only runs if `00-brief.json` contains reference/competitor URLs
@@ -388,6 +390,8 @@ Re-run the orchestrator — it reads `pipeline/00-pipeline-state.json` and resum
 | `02-video-shot-list.json` | 3.6 | orchestrator + asset-generator | asset-generator |
 | `admin/` | 4.2 | tinacms-local-build | build-deployer, Caddy |
 | `tina/__generated__/_schema.json` | 4.2 | tinacms-local-build | build-deployer, Tina admin |
+| `installation.log` | 0 | setup-vps/bootstrap-join | human, auditor |
+| `installation-summary.md` | 0 | setup-vps/bootstrap-join | authorized human operators |
 | `STATUS.md` | All | orchestrator | human |
 | `HUMAN_REVIEW.md` | 2.5, on failure | orchestrator | human |
 | `RESULT.md` | 5 | orchestrator | human |
@@ -432,6 +436,7 @@ All engines are **dependency-gated**, **reduced-motion guarded**, and **mobile-s
 ## Security
 
 - **Secrets**: `vps-connection.json` contains credentials. Never commit to public repos.
+- **Installation summary**: `pipeline/installation-summary.md` intentionally contains URLs and credentials plus warnings/errors/inefficiencies; keep it owner-only (`0600`) and never paste it into public logs or tickets.
 - **SSH**: Key-based auth only. Gitea passwords are auto-generated per-project.
 - **Permissions**: All agents use least-privilege. Auditor is read-only.
 - **API keys**: `PPQ_API_KEY` from environment only, never in artifacts.

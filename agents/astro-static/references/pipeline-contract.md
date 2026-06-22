@@ -56,4 +56,6 @@ STATUS:<TOKEN>[ <key>=<value> ...][ <human detail>]
 
 - `pipeline/vps-connection.json` may contain secrets and must be mode `0600`.
 - `pipeline/bootstrap-result.json` may contain secrets and must be mode `0600`.
+- `pipeline/installation-summary.md` may contain URLs, credentials, and diagnostics and must be mode `0600`.
+- `pipeline/installation.log` must capture the full installation process and must be mode `0600`.
 - `pipeline/RESULT.md`, `pipeline/STATUS.md`, logs, and agent summaries must not print passwords, tokens, private keys, or full secret values.

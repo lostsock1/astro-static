@@ -12,7 +12,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-AGENTS = ROOT.parent / "agents" / "astro-static"
+AGENTS = (
+    ROOT / "agents" / "astro-static"
+    if (ROOT / "agents" / "astro-static").exists()
+    else ROOT.parent / "agents" / "astro-static"
+)
 
 
 class AstroStaticRegressionTests(unittest.TestCase):
@@ -818,6 +822,34 @@ class AstroStaticRegressionTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("STATUS:INVALID_VPS_CONFIG reason=bad_ssh_host", result.stdout + result.stderr)
+
+    def test_setup_vps_mandatory_installation_logging_and_summary(self) -> None:
+        text = (ROOT / "setup-vps.sh").read_text()
+        self.assertIn('INSTALL_LOG_PATH="${STATE_DIR}/install-${PROJECT_NAME}-', text)
+        self.assertIn('exec > >(tee -a "$INSTALL_LOG_PATH") 2>&1', text)
+        self.assertIn('ln -sfn "$INSTALL_LOG_PATH" "${STATE_DIR}/latest-install.log"', text)
+        self.assertIn('SUMMARY_PATH="${STATE_DIR}/installation-summary-${PROJECT_NAME}.md"', text)
+        self.assertIn('## URLs', text)
+        self.assertIn('## Credentials', text)
+        self.assertIn('## Installation Diagnostics', text)
+        self.assertIn('record_diagnostic', text)
+        self.assertIn('diagnostics: $diagnostics', text)
+        self.assertIn('installation_log: $installation_log', text)
+        self.assertIn('installation_summary: $installation_summary', text)
+        self.assertIn('chmod 0600 "$SUMMARY_PATH"', text)
+
+    def test_bootstrap_join_fetches_installation_log_and_summary_owner_only(self) -> None:
+        text = (ROOT / "phases/bootstrap-join.sh").read_text()
+        self.assertIn('REMOTE_INSTALLATION_LOG=$(jq -r', text)
+        self.assertIn('.installation_log // empty', text)
+        self.assertIn('REMOTE_INSTALLATION_SUMMARY=$(jq -r', text)
+        self.assertIn('.installation_summary // empty', text)
+        self.assertIn('sudo cat \\"$REMOTE_INSTALLATION_LOG\\"', text)
+        self.assertIn('> pipeline/installation.log', text)
+        self.assertIn('sudo cat \\"$REMOTE_INSTALLATION_SUMMARY\\"', text)
+        self.assertIn('> pipeline/installation-summary.md', text)
+        self.assertIn('chmod 600 pipeline/installation.log', text)
+        self.assertIn('chmod 600 pipeline/installation-summary.md', text)
 
 
 if __name__ == "__main__":

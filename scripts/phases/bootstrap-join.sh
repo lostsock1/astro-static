@@ -114,6 +114,30 @@ jq -e '
 ' pipeline/bootstrap-result.json >/dev/null \
   || { echo "STATUS:BOOTSTRAP_RESULT_INVALID reason=missing_required_fields"; exit 1; }
 
+# --- Step 3b: Fetch mandatory installation log + secure summary (optional on old VPS) ---
+REMOTE_INSTALLATION_LOG=$(jq -r '.installation_log // empty' pipeline/bootstrap-result.json)
+REMOTE_INSTALLATION_SUMMARY=$(jq -r '.installation_summary // empty' pipeline/bootstrap-result.json)
+
+if [ -n "$REMOTE_INSTALLATION_LOG" ] && [ "$REMOTE_INSTALLATION_LOG" != "null" ]; then
+  case "$REMOTE_INSTALLATION_LOG" in
+    /var/lib/site-pipeline/install-*.log|/var/lib/site-pipeline/latest-install.log) : ;;
+    *) echo "STATUS:BOOTSTRAP_RESULT_INVALID reason=bad_installation_log_path"; exit 1 ;;
+  esac
+  $SSH "sudo cat \"$REMOTE_INSTALLATION_LOG\"" > pipeline/installation.log \
+    || { echo "STATUS:BOOTSTRAP_RESULT_INVALID reason=installation_log_fetch_failed"; exit 1; }
+  chmod 600 pipeline/installation.log
+fi
+
+if [ -n "$REMOTE_INSTALLATION_SUMMARY" ] && [ "$REMOTE_INSTALLATION_SUMMARY" != "null" ]; then
+  case "$REMOTE_INSTALLATION_SUMMARY" in
+    /var/lib/site-pipeline/installation-summary-*.md) : ;;
+    *) echo "STATUS:BOOTSTRAP_RESULT_INVALID reason=bad_installation_summary_path"; exit 1 ;;
+  esac
+  $SSH "sudo cat \"$REMOTE_INSTALLATION_SUMMARY\"" > pipeline/installation-summary.md \
+    || { echo "STATUS:BOOTSTRAP_RESULT_INVALID reason=installation_summary_fetch_failed"; exit 1; }
+  chmod 600 pipeline/installation-summary.md
+fi
+
 python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase startup . --pipeline-dir pipeline/ >/dev/null \
   || { echo "STATUS:BOOTSTRAP_RESULT_INVALID reason=schema_validation_failed"; exit 1; }
 
