@@ -5,28 +5,14 @@ model: ppq/moonshotai/kimi-k2.6
 temperature: 0.2
 permission:
   read: allow
-  edit: allow
-  bash:
-    "ssh *": deny
-    "scp *": deny
-    "rsync *": deny
-    "curl *": ask
-    "jq *": allow
-    "mkdir *": allow
-    "python3 ~/.config/opencode/astro-static/validate-pipeline.py *": allow
-    "*": ask
+  list: allow
   glob: allow
   grep: allow
+  edit: allow
+  bash: allow
   webfetch: allow
-  task:
-    "*": deny
-    "search/deepeye": allow
-    "search/worker": allow
-    "search/proxy": allow
-    "search/scrapling": allow
-    "search/crawlee": allow
-    "search/instagram": allow
-    "search/translator-normalizer": allow
+  task: allow
+  external_directory: allow
 steps: 60
 ---
 
@@ -93,7 +79,7 @@ For each URL provided:
 | Static/known URL | `search/proxy` | Fast, high-fidelity |
 | JS-rendered SPA | `search/scrapling` | Handles dynamic content |
 | Multi-page site | `search/crawlee` | Full site traversal |
-| Instagram/visual brand | `search/instagram` | Visual identity extraction |
+| Instagram/visual brand | `astro-static/instagram-extractor` mode=design | Visual identity + design token extraction + asset download |
 | Anti-bot protected | `search/scrapling` with `stealth: true` | Bypass detection |
 
 **Anti-bot defaults** — always use stealth for: instagram.com, facebook.com, linkedin.com, twitter.com, x.com, tiktok.com, amazon.com, booking.com
@@ -198,7 +184,16 @@ Detect and document common UI sections:
 
 For each detected pattern, capture layout type, spacing, font sizes, colors, and component structure.
 
-### Step 4: Aggregate Across Sites
+### Step 4: Merge Instagram Tokens (if applicable)
+
+If any reference URL was an Instagram profile and `pipeline/00-instagram/design-tokens.json` exists, merge its tokens into the aggregated set:
+
+- Instagram tokens are prefixed with `instagram-` (e.g., `instagram-primary`, `instagram-accent`) — preserve these prefixes so downstream agents know the source
+- Add `"instagram_source": true` to each merged token's `$description`
+- Instagram `visual-analysis.json` color palette and typography observations inform section pattern detection (e.g., "event flyer" composition → bold hero overlay pattern)
+- Record in `extraction-report.md` that Instagram was a design token source, with the extracted handle and confidence level
+
+### Step 5: Aggregate Across Sites
 
 If multiple URLs were provided:
 - Find **common patterns** (shared design language)
@@ -206,7 +201,7 @@ If multiple URLs were provided:
 - Produce a **merged token set** — where sites disagree, pick the most common value and flag alternatives
 - If some URLs fail, still write outputs from successful sources and record failed URLs explicitly in `failed_sources` and `extraction-report.md`
 
-### Step 5: Write Artifacts
+### Step 6: Write Artifacts
 
 #### `tokens.json` (W3C DTCG format)
 

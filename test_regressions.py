@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,7 +12,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-AGENTS = ROOT.parent / "agents" / "astro-static"
+AGENTS = (
+    ROOT / "agents" / "astro-static"
+    if (ROOT / "agents" / "astro-static").exists()
+    else ROOT.parent / "agents" / "astro-static"
+)
 
 
 class AstroStaticRegressionTests(unittest.TestCase):
@@ -82,7 +87,8 @@ class AstroStaticRegressionTests(unittest.TestCase):
             "content_images": [],
             "video_backgrounds": [],
         }))
-        (pipeline / "vps-connection.json").write_text(json.dumps({
+        vps_connection = pipeline / "vps-connection.json"
+        vps_connection.write_text(json.dumps({
             "schema_version": "1.0",
             "project_name": "demo-site",
             "ssh_host": "example.com",
@@ -90,6 +96,7 @@ class AstroStaticRegressionTests(unittest.TestCase):
             "ssh_user": "debian",
             "ssh_key": "/Users/demo/.ssh/id_ed25519",
         }))
+        vps_connection.chmod(0o600)
         phase = {"status": "completed"}
         (pipeline / "00-pipeline-state.json").write_text(json.dumps({
             "project_name": "demo-site",
@@ -98,16 +105,18 @@ class AstroStaticRegressionTests(unittest.TestCase):
             "needs_human_review": False,
             "review_file": None,
             "phases": {
-                "0_bootstrap": dict(phase),
+                "0_bootstrap_launch": dict(phase),
                 "1_design_extraction": dict(phase),
                 "2_research": dict(phase),
                 "2_5_brief_validation": dict(phase),
                 "3_asset_generation": dict(phase),
                 "3_5_image_generation": dict(phase),
                 "3_6_video_generation": dict(phase),
-                "_bootstrap_join": dict(phase),
-                "4_frontend_build": dict(phase),
-                "5_deploy": dict(phase),
+                "3_8_hyperframes_hero_optional": dict(phase),
+                "4_1_frontend_codegen": dict(phase),
+                "4_2_tinacms_local_build": dict(phase),
+                "4_3_build_deploy": dict(phase),
+                "5_publish_result": dict(phase),
             },
         }))
 
@@ -127,14 +136,23 @@ class AstroStaticRegressionTests(unittest.TestCase):
             'export default { integrations: [tina()], vite: { plugins: [tinaAdminDevRedirect()] }, adapter: node({ mode: "standalone" }) };\n'
         )
         (project / "tina").mkdir()
+        (project / "src/content/pages").mkdir(parents=True)
         (project / "tina/config.ts").write_text(
-            'import { LocalAuthProvider, defineConfig } from "tinacms";\n'
-            'export default defineConfig({ clientId: null, token: null, authProvider: new LocalAuthProvider(), contentApiUrlOverride: "/api/tina/gql", schema: { collections: [{ name: "page", path: "src/content/page", ui: { router: () => "/" }, fields: [{ name: "title", type: "string" }, { name: "bullets", type: "string", list: true }, { name: "heroVideo", type: "string" }] }] } });\n'
+            'import { AbstractAuthProvider, defineConfig } from "tinacms";\n'
+            'class PasswordAuthProvider extends AbstractAuthProvider { authenticate(){} getUser(){ return fetch("/api/tina/auth-check") } getToken(){ return { id_token: "" } } logout(){ return fetch("/api/tina/logout", { method: "POST" }) } }\n'
+            'export default defineConfig({ clientId: null, token: null, authProvider: new PasswordAuthProvider(), contentApiUrlOverride: "/api/tina/gql", build: { outputFolder: "admin", publicFolder: "." }, schema: { collections: [{ name: "page", path: "src/content/pages", ui: { router: () => "/" }, fields: [{ name: "title", type: "string" }, { name: "bullets", type: "string", list: true }, { name: "heroVideo", type: "string" }] }] } });\n'
         )
         (project / "src/pages/tina-island").mkdir(parents=True)
         (project / "src/pages/tina-island/[name].ts").write_text("export const prerender = false;\n")
         (project / "src/pages/api/tina").mkdir(parents=True)
-        (project / "src/pages/api/tina/[...routes].ts").write_text("export const prerender = false;\n")
+        (project / "src/pages/api/tina/[...routes].ts").write_text(
+            'export const prerender = false;\n'
+            'const SESSION_COOKIE = "tina_admin_session";\n'
+            'function PasswordBackendAuthProvider() { return { isAuthorized: async () => ({ isAuthorized: true }) }; }\n'
+            'export const POST = "/api/tina/login";\n'
+            'export const LOGOUT = "/api/tina/logout";\n'
+            'export const CHECK = "/api/tina/auth-check";\n'
+        )
         (project / "src/lib/tina").mkdir(parents=True)
         (project / "src/lib/tina/data.ts").write_text(
             'import { requestWithMetadata } from "@tinacms/astro/data";\n'
@@ -253,6 +271,20 @@ class AstroStaticRegressionTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("video_static_poster_layer", result.stdout)
 
+    def test_smoke_detects_tina_project_root_from_dist_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            dist = project / "dist/client"
+            dist.mkdir(parents=True)
+            self._write_valid_dist_shell(dist)
+            (project / "tina").mkdir()
+            (project / "tina/config.ts").write_text("export default {};\n")
+
+            result = subprocess.run(["bash", str(ROOT / "phases" / "smoke.sh")], cwd=dist, text=True, capture_output=True)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("admin_spa_missing", result.stdout)
+
     def test_validator_rejects_unscaled_oklch_lightness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -307,11 +339,43 @@ class AstroStaticRegressionTests(unittest.TestCase):
             self.assertIn(expected, text)
         self.assertNotIn('dist/index.html', text)
 
-    def test_frontend_builder_uses_site_build_so_ssr_restarts(self) -> None:
+    def test_setup_vps_scaffold_implements_tina_password_auth_contract(self) -> None:
+        text = (ROOT / "setup-vps.sh").read_text()
+        for expected in [
+            "class PasswordAuthProvider",
+            "authProvider: new PasswordAuthProvider()",
+            "function PasswordBackendAuthProvider",
+            "POST /api/tina/login",
+            "POST /api/tina/logout",
+            "GET /api/tina/auth-check",
+            "tina_admin_session",
+            'Content-Security-Policy "frame-ancestors',
+        ]:
+            self.assertIn(expected, text)
+        self.assertNotIn('LocalBackendAuthProvider', text)
+        self.assertNotIn('X-Frame-Options "DENY"', text)
+
+    def test_tinacms_local_build_requires_login_and_bridge_artifacts(self) -> None:
+        text = (ROOT / "phases/tinacms-local-build.sh").read_text()
+        self.assertIn('fail "no_admin_login_html"', text)
+        self.assertIn('fail "no_tina_bridge"', text)
+
+    def test_frontend_builder_is_local_codegen_only(self) -> None:
         text = (AGENTS / "frontend-builder.md").read_text()
-        self.assertIn('/usr/local/bin/site-build', text)
-        self.assertIn('REMOTE_BUILD_CMD=', text)
+        self.assertIn('local codegen only', text)
+        self.assertIn('STATUS:FRONTEND_CODEGEN_OK', text)
+        self.assertNotIn('/usr/local/bin/site-build', text)
+        self.assertNotIn('REMOTE_BUILD_CMD=', text)
+        self.assertNotIn('rsync -avz', text)
+        self.assertNotIn('ssh -p', text)
         self.assertNotIn('bun install --silent && bun run check && bun run build', text)
+
+    def test_tinacms_local_build_is_local_only(self) -> None:
+        text = (ROOT / "phases/tinacms-local-build.sh").read_text()
+        self.assertNotIn('vps-connection.json', text)
+        self.assertNotIn('rsync', text)
+        self.assertNotIn('systemctl restart', text)
+        self.assertNotIn('SSH_CMD', text)
 
     def test_orchestrator_uses_site_build_so_ssr_restarts(self) -> None:
         text = (AGENTS / "orchestrator.md").read_text()
@@ -381,7 +445,45 @@ class AstroStaticRegressionTests(unittest.TestCase):
             )
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("LocalAuthProvider", result.stdout)
+            self.assertIn("PasswordAuthProvider", result.stdout)
+
+    def test_validator_rejects_tina_local_auth_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_tina_project(project)
+            (project / "tina/config.ts").write_text(
+                'import { LocalAuthProvider, defineConfig } from "tinacms";\n'
+                'export default defineConfig({ clientId: null, token: null, authProvider: new LocalAuthProvider(), contentApiUrlOverride: "/api/tina/gql", build: { outputFolder: "admin", publicFolder: "." }, schema: { collections: [{ name: "page", path: "src/content/pages", ui: { router: () => "/" }, fields: [] }] } });\n'
+            )
+
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "build", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("LocalAuthProvider is not allowed", result.stdout)
+            self.assertIn("PasswordAuthProvider", result.stdout)
+
+    def test_validator_rejects_tina_api_without_password_auth_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_tina_project(project)
+            (project / "src/pages/api/tina/[...routes].ts").write_text("export const prerender = false;\n")
+
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "build", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("/api/tina/login", result.stdout)
+            self.assertIn("/api/tina/logout", result.stdout)
+            self.assertIn("/api/tina/auth-check", result.stdout)
 
     def test_validator_requires_tina_click_to_edit_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -401,14 +503,23 @@ class AstroStaticRegressionTests(unittest.TestCase):
                 'export default { integrations: [tina()], vite: { plugins: [tinaAdminDevRedirect()] }, adapter: node({ mode: "standalone" }) };\n'
             )
             (project / "tina").mkdir()
+            (project / "src/content/pages").mkdir(parents=True)
             (project / "tina/config.ts").write_text(
-                'import { LocalAuthProvider, defineConfig } from "tinacms";\n'
-                'export default defineConfig({ clientId: null, token: null, authProvider: new LocalAuthProvider(), contentApiUrlOverride: "/api/tina/gql", schema: { collections: [{ name: "page", path: "src/content/page", ui: { router: () => "/" }, fields: [] }] } });\n'
+                'import { AbstractAuthProvider, defineConfig } from "tinacms";\n'
+                'class PasswordAuthProvider extends AbstractAuthProvider { authenticate(){} getUser(){ return fetch("/api/tina/auth-check") } getToken(){ return { id_token: "" } } logout(){ return fetch("/api/tina/logout", { method: "POST" }) } }\n'
+                'export default defineConfig({ clientId: null, token: null, authProvider: new PasswordAuthProvider(), contentApiUrlOverride: "/api/tina/gql", build: { outputFolder: "admin", publicFolder: "." }, schema: { collections: [{ name: "page", path: "src/content/pages", ui: { router: () => "/" }, fields: [] }] } });\n'
             )
             (project / "src/pages/tina-island").mkdir(parents=True)
             (project / "src/pages/tina-island/[name].ts").write_text("export const prerender = false;\n")
             (project / "src/pages/api/tina").mkdir(parents=True)
-            (project / "src/pages/api/tina/[...routes].ts").write_text("export const prerender = false;\n")
+            (project / "src/pages/api/tina/[...routes].ts").write_text(
+                'export const prerender = false;\n'
+                'const SESSION_COOKIE = "tina_admin_session";\n'
+                'function PasswordBackendAuthProvider() { return { isAuthorized: async () => ({ isAuthorized: true }) }; }\n'
+                'export const POST = "/api/tina/login";\n'
+                'export const LOGOUT = "/api/tina/logout";\n'
+                'export const CHECK = "/api/tina/auth-check";\n'
+            )
             (project / "src/lib/tina").mkdir(parents=True)
             (project / "src/lib/tina/data.ts").write_text('import { requestWithMetadata } from "@tinacms/astro/data";\nexport { requestWithMetadata };\n')
 
@@ -578,6 +689,139 @@ class AstroStaticRegressionTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_pipeline_contract_exists_and_schema_uses_canonical_phase_ids(self) -> None:
+        contract = AGENTS / "references" / "pipeline-contract.md"
+        self.assertTrue(contract.is_file(), "pipeline-contract.md is the canonical phase graph")
+        contract_text = contract.read_text()
+        schema = json.loads((AGENTS / "schemas" / "00-pipeline-state.schema.json").read_text())
+        phase_props = set(schema["properties"]["phases"]["properties"].keys())
+        required = set(schema["properties"]["phases"]["required"])
+        expected = {
+            "0_bootstrap_launch",
+            "1_design_extraction",
+            "2_research",
+            "2_5_brief_validation",
+            "3_asset_generation",
+            "3_5_image_generation",
+            "3_6_video_generation",
+            "3_8_hyperframes_hero_optional",
+            "4_1_frontend_codegen",
+            "4_2_tinacms_local_build",
+            "4_3_build_deploy",
+            "5_publish_result",
+        }
+        self.assertTrue(expected.issubset(phase_props))
+        self.assertEqual(expected, required)
+        for phase_id in expected:
+            self.assertIn(f"`{phase_id}`", contract_text)
+        for legacy in ["0_bootstrap", "_bootstrap_join", "4_frontend_build", "5_deploy"]:
+            self.assertNotIn(f'"{legacy}"', json.dumps(schema))
+
+    def test_no_obsolete_space_status_grammar_in_astro_static_agents(self) -> None:
+        offenders: list[str] = []
+        pattern = re.compile(r"STATUS:\s+(?:OK|FAILED)\b")
+        for path in AGENTS.rglob("*.md"):
+            text = path.read_text()
+            if pattern.search(text):
+                offenders.append(str(path.relative_to(AGENTS)))
+        self.assertEqual(offenders, [], "Use STATUS:<TOKEN> with no space after colon")
+
+    def test_bootstrap_result_fetch_uses_owner_only_channel(self) -> None:
+        setup = (ROOT / "setup-vps.sh").read_text()
+        join = (ROOT / "phases" / "bootstrap-join.sh").read_text()
+        self.assertIn('umask 077', setup)
+        self.assertIn('RESULT_PATH="${STATE_DIR}/pipeline-result.json"', setup)
+        self.assertIn('chmod 0600 "$RESULT_PATH"', setup)
+        self.assertNotIn('chmod 0644 "$RESULT_PATH"', setup)
+        self.assertNotIn('sudo chmod 644 /tmp/pipeline-result.json', join)
+        self.assertNotIn(':/tmp/pipeline-result.json" pipeline/bootstrap-result.json', join)
+        self.assertIn('sudo cat /var/lib/site-pipeline/pipeline-result.json', join)
+        self.assertIn('chmod 600 pipeline/bootstrap-result.json', join)
+
+    def test_setup_vps_skips_root_ssh_lockout_hardening_without_deploy_user(self) -> None:
+        text = (ROOT / "setup-vps.sh").read_text()
+        self.assertIn('Direct root invocation has no verified non-root deploy user', text)
+        self.assertNotIn("Verify root's authorized_keys", text)
+
+    def test_result_template_redacts_secret_values(self) -> None:
+        text = (AGENTS / "orchestrator.md").read_text()
+        self.assertNotIn("TinaCMS Admin Password:** <TINA_ADMIN_PASSWORD", text)
+        self.assertNotIn("Gitea Password:** <gitea_pass", text)
+        self.assertIn("Credentials are not printed", text)
+        self.assertIn("pipeline/vps-connection.json", text)
+
+    def test_validator_rejects_open_secret_file_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_pipeline_project(
+                project,
+                '@import "tailwindcss";\n@theme { --color-background: oklch(0.94 0.01 140); --font-body: "Inter"; }\n',
+            )
+            (project / "pipeline/vps-connection.json").chmod(0o644)
+
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "build", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("secret file permissions", result.stdout)
+            self.assertIn("0600", result.stdout)
+
+    def test_validator_rejects_asset_path_traversal_and_absolute_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_pipeline_project(
+                project,
+                '@import "tailwindcss";\n@theme { --color-background: oklch(0.94 0.01 140); --font-body: "Inter"; }\n',
+            )
+            manifest_path = project / "pipeline/02-asset-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["logo"]["primary_path"] = "../secrets/logo.png"
+            manifest["content_images"] = [{"id": "bad", "path": "/etc/passwd", "status": "generated"}]
+            manifest_path.write_text(json.dumps(manifest))
+
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "assets", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsafe artifact path", result.stdout)
+            self.assertIn("absolute paths are not allowed", result.stdout)
+            self.assertIn("path traversal is not allowed", result.stdout)
+
+    def test_bootstrap_join_rejects_invalid_json_shell_values_before_ssh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            pipeline = project / "pipeline"
+            pipeline.mkdir()
+            (pipeline / "bootstrap.exit").write_text("0\n")
+            vps_connection = pipeline / "vps-connection.json"
+            vps_connection.write_text(json.dumps({
+                "schema_version": "1.0",
+                "project_name": "demo-site",
+                "ssh_host": "bad;host",
+                "ssh_port": 22,
+                "ssh_user": "debian",
+                "ssh_key": "/Users/demo/.ssh/id_ed25519",
+            }))
+            vps_connection.chmod(0o600)
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "phases/bootstrap-join.sh")],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("STATUS:INVALID_VPS_CONFIG reason=bad_ssh_host", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

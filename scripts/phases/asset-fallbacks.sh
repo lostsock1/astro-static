@@ -117,6 +117,13 @@ case "$MODE" in
     count=$(jq '.videos | length' "$VIDEO_SHOTS")
     for ((i=0; i<count; i++)); do
       path=$(jq -r ".videos[$i].output_path" "$VIDEO_SHOTS")
+      poster=$(jq -r ".videos[$i].poster_path // empty" "$VIDEO_SHOTS")
+      case "$poster" in
+        "$path"|*.mp4|*.mov|*.m4v|*.webm)
+          jq ".videos[$i].poster_path = null | .videos[$i].fallback = \"gradient\" | .videos[$i].fallback_reason = ((.videos[$i].fallback_reason // \"\") + \" poster_was_video\")" \
+            "$VIDEO_SHOTS" > "$VIDEO_SHOTS.tmp" && mv "$VIDEO_SHOTS.tmp" "$VIDEO_SHOTS"
+          ;;
+      esac
       if [ -s "$path" ] && [ "$(du -k "$path" | cut -f1)" -gt 100 ]; then
         jq ".videos[$i].status = \"generated\"" "$VIDEO_SHOTS" > "$VIDEO_SHOTS.tmp" && mv "$VIDEO_SHOTS.tmp" "$VIDEO_SHOTS"
       else

@@ -15,6 +15,22 @@
 
 set -eu
 
+# Portable timeout: macOS doesn't ship `timeout` (it's `gtimeout` from coreutils).
+# Define a function that delegates to whatever is available, or falls back to
+# a perl-based wrapper. This prevents silent command-not-found failures on macOS.
+if command -v timeout >/dev/null 2>&1; then
+  _timeout() { timeout "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  _timeout() { gtimeout "$@"; }
+else
+  # perl-based fallback: perl is present on every macOS and Debian system.
+  # Usage: _timeout <seconds> <command> [args...]
+  _timeout() {
+    local secs="$1"; shift
+    perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+  }
+fi
+
 VPS_JSON="pipeline/vps-connection.json"
 [ -f "$VPS_JSON" ] || { echo "STATUS:INVALID_VPS_CONFIG reason=missing path=$VPS_JSON"; exit 1; }
 
@@ -27,9 +43,28 @@ for var in GITEA_URL GITEA_USER GITEA_PASS PROJECT; do
   [ -n "${v:-}" ] || { echo "STATUS:INVALID_VPS_CONFIG reason=missing_field field=$var"; exit 1; }
 done
 
+# SSH details are optional for the primary HTTP push, but enable a robust
+# fallback: ship a git bundle to the VPS and push into Gitea locally as the
+# `git` user. This avoids flaky public :3000 links without bypassing the Gitea
+# bare repo.
+SSH_PORT=$(jq -r '.ssh_port // empty' "$VPS_JSON")
+SSH_KEY=$(jq  -r '.ssh_key // empty'  "$VPS_JSON")
+SSH_USER=$(jq -r '.ssh_user // empty' "$VPS_JSON")
+SSH_HOST=$(jq -r '.ssh_host // empty' "$VPS_JSON")
+
 # --- Step 1: Ensure Gitea repo exists ---
+# Resolve HTTP→HTTPS redirect: Caddy auto-TLS on sslip.io redirects HTTP to
+# HTTPS. curl -L follows it, but git push doesn't follow redirects. Detect the
+# redirect and upgrade GITEA_URL to HTTPS before constructing the remote URL.
+BASE_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+  -u "$GITEA_USER:$GITEA_PASS" \
+  "$GITEA_URL/api/v1/repos/$GITEA_USER/$PROJECT")
+if [ "$BASE_CODE" = "308" ] || [ "$BASE_CODE" = "301" ] || [ "$BASE_CODE" = "302" ]; then
+  GITEA_URL="https://${GITEA_URL#http://}"
+fi
+
 # Idempotent: 200 = already exists, 404 = create. Anything else = fatal.
-REPO_EXISTS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+REPO_EXISTS=$(curl -s -L -o /dev/null -w "%{http_code}" --max-time 10 \
   -u "$GITEA_USER:$GITEA_PASS" \
   "$GITEA_URL/api/v1/repos/$GITEA_USER/$PROJECT")
 if [ "$REPO_EXISTS" = "404" ]; then
@@ -79,6 +114,33 @@ git remote set-url origin "$REMOTE_URL" 2>/dev/null \
 # itself only contains the *path* to the cred file, not the password.
 git config --local credential.helper "store --file=$CRED_FILE"
 
+remote_bundle_push() {
+  [ -n "${SSH_PORT:-}" ] && [ -n "${SSH_KEY:-}" ] && [ -n "${SSH_USER:-}" ] && [ -n "${SSH_HOST:-}" ] || return 1
+  [ -f "$SSH_KEY" ] || return 1
+  git rev-parse --verify main >/dev/null 2>&1 || return 1
+
+  LOCAL_BUNDLE=$(mktemp "${TMPDIR:-/tmp}/astro-static-push-${PROJECT}.XXXXXX.bundle") || return 1
+  REMOTE_BUNDLE="/tmp/astro-static-push-${PROJECT}-$(date +%s)-$$.bundle"
+  REMOTE_REPO="/home/git/gitea-repositories/${GITEA_USER}/${PROJECT}.git"
+
+  cleanup_local() { rm -f "$LOCAL_BUNDLE" 2>/dev/null || true; }
+  trap cleanup_local RETURN
+
+  git bundle create "$LOCAL_BUNDLE" main >/dev/null || return 1
+  scp -P "$SSH_PORT" -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+    "$LOCAL_BUNDLE" "$SSH_USER@$SSH_HOST:$REMOTE_BUNDLE" >/dev/null 2>&1 || return 1
+
+  ssh -p "$SSH_PORT" -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+    "$SSH_USER@$SSH_HOST" \
+    "set -e; \
+     TMP=\$(mktemp -d /tmp/astro-static-git-push.XXXXXX); \
+     cleanup(){ sudo rm -rf \"\$TMP\" '$REMOTE_BUNDLE'; }; \
+     trap cleanup EXIT; \
+     test -d '$REMOTE_REPO'; \
+     sudo -u git git clone '$REMOTE_BUNDLE' \"\$TMP/repo\" >/dev/null 2>&1; \
+     sudo -u git git -C \"\$TMP/repo\" push '$REMOTE_REPO' main" >/dev/null 2>&1
+}
+
 # Never commit generated credentials/logs. The project repo is for the site
 # source, not VPS secrets. Keep this idempotent and local to the repo.
 touch .gitignore
@@ -94,7 +156,7 @@ for pattern in \
   grep -qxF "$pattern" .gitignore 2>/dev/null || printf '%s\n' "$pattern" >> .gitignore
 done
 
-timeout 30 git fetch origin main 2>/dev/null || true
+_timeout 30 git fetch origin main 2>/dev/null || true
 if [ "$PREEXISTING_HEAD" = "NO" ] && git rev-parse --verify origin/main >/dev/null 2>&1; then
   git reset --mixed origin/main >/dev/null
 fi
@@ -120,13 +182,13 @@ if [ -z "$GITEA_PORT" ]; then
 fi
 
 # Optional diagnostic only. Do not fail if /dev/tcp is unavailable or lies.
-timeout 5 bash -c ": > /dev/tcp/$GITEA_HOST/$GITEA_PORT" 2>/dev/null \
-  || echo "WARN:GITEA_TCP_PROBE_FAILED host=$GITEA_HOST port=$GITEA_PORT — continuing to HTTP preflight" >&2
+_timeout 5 bash -c ": > /dev/tcp/$GITEA_HOST/$GITEA_PORT" 2>/dev/null \
+  || echo "STATUS:GITEA_TCP_PROBE_WARNING host=$GITEA_HOST port=$GITEA_PORT — continuing to HTTP preflight" >&2
 
 # Authenticated repo-scoped check — proves creds AND repo existence in one call.
 # More useful than anonymous /api/v1/version, which doesn't exercise the
 # credential path.
-REPO_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+REPO_CODE=$(curl -s -L -o /dev/null -w '%{http_code}' --max-time 10 \
   -u "$GITEA_USER:$GITEA_PASS" "$GITEA_URL/api/v1/repos/$GITEA_USER/$PROJECT")
 case "$REPO_CODE" in
   200) : ;;
@@ -140,9 +202,9 @@ esac
 # the time we reach Phase 5 on a warm project the remote may already be ahead
 # of local HEAD. Without this rebase, push is rejected as non-fast-forward and
 # any remote content edits made between runs are lost.
-timeout 30 git fetch origin main 2>/dev/null || true
+_timeout 30 git fetch origin main 2>/dev/null || true
 if git rev-parse --verify origin/main >/dev/null 2>&1; then
-  if ! timeout 60 git pull --rebase origin main; then
+  if ! _timeout 60 git pull --rebase origin main; then
     echo "STATUS:GIT_REBASE_CONFLICT"
     echo "The local site has diverged from Gitea (likely a content edit on the VPS)."
     echo "Resolve the conflict manually in $(pwd) and re-run the orchestrator."
@@ -151,18 +213,27 @@ if git rev-parse --verify origin/main >/dev/null 2>&1; then
 fi
 
 # --- Step 6: Push with hard wall-clock cap + stall detection ---
-# LOW_SPEED_LIMIT=1000 bytes/s over LOW_SPEED_TIME=30s triggers abort —
-# catches silent stalls where the server accepts bytes then stops acking.
-# timeout 180 is the hard ceiling regardless of activity.
+# LOW_SPEED_LIMIT is deliberately low: small VPS/Gitea links can dip below
+# 1KB/s for short stretches while still making progress. A prior 1000/30 gate
+# caused false PUSH_FAILED results on healthy but slow pushes.
+# timeout 300 is the hard ceiling regardless of activity.
 set +e
-GIT_HTTP_LOW_SPEED_LIMIT=1000 \
-GIT_HTTP_LOW_SPEED_TIME=30 \
-timeout 180 git push -u origin main
+GIT_HTTP_LOW_SPEED_LIMIT=100 \
+GIT_HTTP_LOW_SPEED_TIME=90 \
+_timeout 300 git push -u origin main
 PUSH_EXIT=$?
 set -e
 
+if [ "$PUSH_EXIT" -ne 0 ]; then
+  echo "WARN:PUSH_HTTP_FAILED exit=$PUSH_EXIT — trying remote bundle fallback over SSH" >&2
+  if remote_bundle_push; then
+    echo "STATUS:PUSH_OK method=remote_bundle_fallback"
+    exit 0
+  fi
+fi
+
 case "$PUSH_EXIT" in
   0)   echo "STATUS:PUSH_OK"; exit 0 ;;
-  124) echo "STATUS:PUSH_TIMEOUT after 180s — Gitea accepted connection but push stalled"; exit 1 ;;
+  124) echo "STATUS:PUSH_TIMEOUT after 300s — Gitea accepted connection but push stalled and remote bundle fallback failed"; exit 1 ;;
   *)   echo "STATUS:PUSH_FAILED exit=$PUSH_EXIT"; exit 1 ;;
 esac

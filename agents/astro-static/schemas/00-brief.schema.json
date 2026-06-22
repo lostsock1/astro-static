@@ -96,6 +96,15 @@
     "design_references": {
       "type": "object",
       "additionalProperties": true
+    },
+    "instagram_handle": {
+      "type": "string",
+      "description": "Optional Instagram handle for design/brand extraction (without @, e.g. 'freedomsounds_canoaquebrada')"
+    },
+    "instagram_use": {
+      "type": "string",
+      "enum": ["design_reference", "brand_research", "both"],
+      "description": "How to use the Instagram handle: as a design reference (Phase 1), brand research (Phase 2), or both"
     }
   },
   "additionalProperties": true

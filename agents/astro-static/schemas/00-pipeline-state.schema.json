@@ -32,19 +32,21 @@
     "phases": {
       "type": "object",
       "required": [
-        "0_bootstrap",
+        "0_bootstrap_launch",
         "1_design_extraction",
         "2_research",
         "2_5_brief_validation",
         "3_asset_generation",
         "3_5_image_generation",
         "3_6_video_generation",
-        "_bootstrap_join",
-        "4_frontend_build",
-        "5_deploy"
+        "3_8_hyperframes_hero_optional",
+        "4_1_frontend_codegen",
+        "4_2_tinacms_local_build",
+        "4_3_build_deploy",
+        "5_publish_result"
       ],
       "properties": {
-        "0_bootstrap": {
+        "0_bootstrap_launch": {
           "$ref": "#/$defs/phaseWithLaunch"
         },
         "1_design_extraction": {
@@ -65,13 +67,19 @@
         "3_6_video_generation": {
           "$ref": "#/$defs/phase"
         },
-        "_bootstrap_join": {
-          "$ref": "#/$defs/joinPhase"
-        },
-        "4_frontend_build": {
+        "3_8_hyperframes_hero_optional": {
           "$ref": "#/$defs/phase"
         },
-        "5_deploy": {
+        "4_1_frontend_codegen": {
+          "$ref": "#/$defs/phase"
+        },
+        "4_2_tinacms_local_build": {
+          "$ref": "#/$defs/phase"
+        },
+        "4_3_build_deploy": {
+          "$ref": "#/$defs/phase"
+        },
+        "5_publish_result": {
           "$ref": "#/$defs/phase"
         }
       },
@@ -87,6 +95,8 @@
         "launched",
         "completed",
         "skipped",
+        "stale",
+        "invalidated",
         "failed",
         "halted_for_review"
       ]
@@ -107,6 +117,24 @@
           ]
         },
         "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "invalidated_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "invalidated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rerun_from": {
           "type": [
             "string",
             "null"
@@ -159,33 +187,20 @@
             "string",
             "null"
           ]
-        }
-      },
-      "additionalProperties": true
-    },
-    "joinPhase": {
-      "type": "object",
-      "required": [
-        "status"
-      ],
-      "properties": {
-        "status": {
-          "type": "string",
-          "enum": [
-            "pending",
-            "in_progress",
-            "completed",
-            "failed",
-            "halted_for_review"
-          ]
         },
-        "completed_at": {
+        "invalidated_by": {
           "type": [
             "string",
             "null"
           ]
         },
-        "notes": {
+        "invalidated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rerun_from": {
           "type": [
             "string",
             "null"

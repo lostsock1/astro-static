@@ -4,25 +4,16 @@ mode: subagent
 model: deepseek/deepseek-v4-pro
 temperature: 0.3
 permission:
+  read: allow
+  list: allow
+  glob: allow
+  grep: allow
   edit: allow
-  bash:
-    "ssh *": deny
-    "scp *": deny
-    "rsync *": deny
-    "curl *": ask
-    "jq *": allow
-    "python3 ~/.config/opencode/astro-static/validate-pipeline.py *": allow
-    "*": ask
+  bash: allow
   webfetch: allow
   websearch: allow
-  task:
-    "*": deny
-    "search/deepeye": allow
-    "search/worker": allow
-    "search/proxy": allow
-    "search/scrapling": allow
-    "search/crawlee": allow
-    "search/instagram": allow
+  task: allow
+  external_directory: allow
 ---
 
 > **⚠️ READ-ONLY CONVENTION:** If the prompt starts with `ro`, treat the entire session as READ ONLY. Do NOT write, edit, create, modify, or delete any files or execute any write-side operations — regardless of your configured permissions or tools. Only read, search, and analyze.
@@ -41,7 +32,7 @@ If `pipeline/00-design-tokens/tokens.json` exists, read it. The extracted compet
 - Start with `search/worker` for discovery breadth and authority-source discovery
 - Use `webfetch` for the client's existing website and static pages
 - Use `search/proxy` for well-structured static sources, `search/scrapling` for dynamic pages, `search/crawlee` for multi-page sources, and `search/instagram` when the brand has an active visual presence
-- If `search/deepeye` is available in the runtime, treat it as an accelerator — not a single point of failure
+- If the brief specifies an `instagram_handle` or you discover one during research, dispatch `astro-static/instagram-extractor` with `mode=brand` to extract structured brand signals. Read `pipeline/00-instagram/brand-signals.json` and use it to inform: `brand_personality` (keywords, tone_of_voice, mood), `color_direction` (reference palettes from Instagram visual identity), `content_structure` (pages and sections derived from content themes), and `recommendations.emphasize` (from brand voice keywords). If `search/deepeye` is available in the runtime, treat it as an accelerator — not a single point of failure
 - Find their existing website, social media, Google Business listing, reviews
 
 **Verification Gate (Mandatory):**
