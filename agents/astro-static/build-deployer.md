@@ -31,7 +31,7 @@ Take a generated local Astro/Tailwind/Tina project and prove it works on the VPS
 1. Join any background bootstrap and merge the bootstrap result.
 2. Sync local source and generated artifacts to the VPS.
 3. Run the remote `/usr/local/bin/site-build` wrapper.
-4. Run post-build smoke checks against the built `dist/client` output.
+4. Run post-build smoke checks against the built output; SSR projects are checked through the live `SITE_URL` plus local `dist/client` assets.
 5. Run strict local final validation.
 6. Emit one machine-readable `STATUS:` line and concise evidence.
 
@@ -43,6 +43,7 @@ Take a generated local Astro/Tailwind/Tina project and prove it works on the VPS
 - Never sync `pipeline/vps-connection.json`, `pipeline/bootstrap-result.json`, bootstrap logs, or private keys to the VPS.
 - Never use destructive deployment flags such as `rsync --delete` unless the user explicitly requests destructive cleanup for the exact site path.
 - If build or smoke fails, return the full non-secret diagnostic output and a failure `STATUS:`. Do not silently truncate with `tail`.
+- SSR output is valid and expected for TinaCMS. Do not require `dist/client/index.html` when `dist/server/entry.mjs` exists; use live HTTP smoke instead.
 - If source changes are needed, stop and return the failure details for `astro-static/frontend-builder`; do not attempt codegen fixes yourself.
 
 ## Required Inputs
@@ -114,6 +115,7 @@ USER=$(jq -r '.ssh_user' pipeline/vps-connection.json)
 HOST=$(jq -r '.ssh_host' pipeline/vps-connection.json)
 PROJECT=$(jq -r '.project_name' pipeline/vps-connection.json)
 SITE_DIR=$(jq -r '.site_dir' pipeline/vps-connection.json)
+SITE_URL=$(jq -r '.site_url // empty' pipeline/vps-connection.json)
 
 case "$HOST" in ""|null|*[!A-Za-z0-9._-]*) echo "STATUS:INVALID_VPS_CONFIG reason=bad_ssh_host"; exit 1 ;; esac
 case "$PORT" in ''|null|*[!0-9]*) echo "STATUS:INVALID_VPS_CONFIG reason=bad_ssh_port"; exit 1 ;; esac
@@ -121,6 +123,7 @@ test "$PORT" -ge 1 && test "$PORT" -le 65535 || { echo "STATUS:INVALID_VPS_CONFI
 case "$USER" in ""|null|*[!A-Za-z0-9._-]*) echo "STATUS:INVALID_VPS_CONFIG reason=bad_ssh_user"; exit 1 ;; esac
 case "$PROJECT" in ""|null|*[!A-Za-z0-9._-]*) echo "STATUS:INVALID_VPS_CONFIG reason=bad_project_name"; exit 1 ;; esac
 case "$SITE_DIR" in /var/www/sites/*) : ;; *) echo "STATUS:INVALID_VPS_CONFIG reason=bad_site_dir"; exit 1 ;; esac
+case "$SITE_URL" in http://*|https://*) : ;; ''|null) echo "STATUS:INVALID_VPS_CONFIG reason=missing_site_url"; exit 1 ;; *) echo "STATUS:INVALID_VPS_CONFIG reason=bad_site_url"; exit 1 ;; esac
 
 SSH_CMD=(ssh -p "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$USER@$HOST")
 RSYNC_SSH="ssh -p $PORT -i $KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
@@ -139,9 +142,16 @@ timeout 240 rsync -az --timeout=60 \
   --exclude='dist/' \
   --exclude='.astro/' \
   --exclude='.opencode/' \
+  --exclude='.env' \
+  --exclude='.env.*' \
   --exclude='pipeline/vps-connection.json' \
+  --exclude='pipeline/.git-credentials' \
   --exclude='pipeline/bootstrap-result.json' \
-  --exclude='pipeline/bootstrap.log' \
+  --exclude='pipeline/bootstrap*.log' \
+  --exclude='pipeline/bootstrap*.pid' \
+  --exclude='pipeline/bootstrap*.exit' \
+  --exclude='pipeline/RESULT.md' \
+  --exclude='pipeline/HUMAN_REVIEW.md' \
   --exclude='pipeline/_bg-bootstrap.sh' \
   -e "$RSYNC_SSH" \
   ./ "$USER@$HOST:$SITE_DIR/" || {
@@ -173,16 +183,20 @@ BUILD_OUTPUT=$("${SSH_CMD[@]}" "timeout 600 /usr/local/bin/site-build '$SITE_DIR
 }
 printf '%s\n' "$BUILD_OUTPUT"
 
-"${SSH_CMD[@]}" "test -f '$SITE_DIR/dist/client/index.html'" \
-  || { echo "STATUS:BUILD_FAILED reason=no_index_html"; exit 1; }
+BUILD_MODE=$("${SSH_CMD[@]}" "if test -f '$SITE_DIR/dist/server/entry.mjs'; then printf ssr; elif test -f '$SITE_DIR/dist/client/index.html'; then printf static; else printf missing; fi")
+case "$BUILD_MODE" in
+  ssr) echo "BUILD_MODE=ssr dist/server/entry.mjs present" ;;
+  static) echo "BUILD_MODE=static dist/client/index.html present" ;;
+  *) echo "STATUS:BUILD_FAILED reason=no_build_output"; exit 1 ;;
+esac
 ```
 
 ### 5. Smoke test
 
-Run the canonical smoke script on the VPS from the built output directory. Preserve full output.
+Run the canonical smoke script on the VPS. SSR mode must pass `SITE_URL` and `SITE_DIR`; the smoke script fetches the live page and checks the on-disk `dist/client` assets. Static mode can still run from `dist/client`. Smoke environment contract: `SITE_URL="$SITE_URL" SITE_DIR="$SITE_DIR"`. Preserve full output.
 
 ```bash
-SMOKE_OUTPUT=$("${SSH_CMD[@]}" "cd '$SITE_DIR/dist/client' && bash -s" \
+SMOKE_OUTPUT=$("${SSH_CMD[@]}" "cd '$SITE_DIR' && SITE_URL=\"$SITE_URL\" SITE_DIR=\"$SITE_DIR\" bash -s" \
   < ~/.config/opencode/astro-static/phases/smoke.sh 2>&1) || {
     printf '%s\n' "$SMOKE_OUTPUT"
     echo "STATUS:SMOKE_FAILED"
@@ -213,7 +227,7 @@ STATUS:BUILD_DEPLOY_OK
 Include concise evidence:
 
 - remote build wrapper completed
-- `dist/client/index.html` exists
+- `dist/server/entry.mjs` exists for SSR mode or `dist/client/index.html` exists for static mode
 - smoke script emitted `STATUS:SMOKE_OK`
 - final validator exited 0
 

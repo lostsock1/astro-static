@@ -186,7 +186,7 @@ Open `index.html` (for `blank` template) or the template's existing composition 
 <style>
   @import url("HEADING_GOOGLE_URL");
   @import url("BODY_GOOGLE_URL");
-  
+
   :root {
     --color-primary: #HEX;
     --color-accent: #HEX;
@@ -196,7 +196,7 @@ Open `index.html` (for `blank` template) or the template's existing composition 
     --font-heading: "HEADING_FAMILY", serif;
     --font-body: "BODY_FAMILY", sans-serif;
   }
-  
+
   body {
     margin: 0;
     background: var(--color-background);
@@ -222,10 +222,10 @@ Open `index.html` (for `blank` template) or the template's existing composition 
 <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
 <script>
   const tl = gsap.timeline({ paused: true });
-  
+
   // Logo reveal (if logo exists)
   tl.from("#logo", { opacity: 0, duration: 0.8, ease: "power2.out" }, 0);
-  
+
   // Brand name reveal
   tl.from("#brand-name", {
     opacity: 0,
@@ -233,7 +233,7 @@ Open `index.html` (for `blank` template) or the template's existing composition 
     duration: 0.7,
     ease: "power2.out",
   }, 1.2);
-  
+
   // Tagline reveal (if tagline exists)
   tl.from("#tagline", {
     opacity: 0,
@@ -241,10 +241,10 @@ Open `index.html` (for `blank` template) or the template's existing composition 
     duration: 0.7,
     ease: "power2.out",
   }, 2.5);
-  
+
   // Hold
   tl.set({}, {}, 8);  // extend timeline to 8s
-  
+
   window.__timelines = window.__timelines || {};
   window.__timelines["hero-intro"] = tl;
 </script>

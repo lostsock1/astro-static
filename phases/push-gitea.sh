@@ -145,6 +145,14 @@ remote_bundle_push() {
 # source, not VPS secrets. Keep this idempotent and local to the repo.
 touch .gitignore
 for pattern in \
+  'node_modules/' \
+  'dist/' \
+  '.astro/' \
+  '.opencode/' \
+  '.DS_Store' \
+  '.env' \
+  '.env.*' \
+  '*.log' \
   'pipeline/vps-connection.json' \
   'pipeline/.git-credentials' \
   'pipeline/bootstrap*.json' \
@@ -156,12 +164,37 @@ for pattern in \
   grep -qxF "$pattern" .gitignore 2>/dev/null || printf '%s\n' "$pattern" >> .gitignore
 done
 
+# If a previous broken run already staged/tracked local-only artifacts, untrack
+# them now. Do not delete the working tree copies; just keep the Gitea source
+# repository free of dependencies, build output, secrets, and transient logs.
+git rm --cached --ignore-unmatch -r \
+  node_modules dist .astro .opencode \
+  pipeline/vps-connection.json pipeline/bootstrap-result.json pipeline/.git-credentials \
+  pipeline/bootstrap.log pipeline/_bg-bootstrap.sh \
+  >/dev/null 2>&1 || true
+
 _timeout 30 git fetch origin main 2>/dev/null || true
 if [ "$PREEXISTING_HEAD" = "NO" ] && git rev-parse --verify origin/main >/dev/null 2>&1; then
   git reset --mixed origin/main >/dev/null
 fi
 
-git add -A
+git add -A -- . \
+  ':!node_modules/' \
+  ':!dist/' \
+  ':!.astro/' \
+  ':!.opencode/' \
+  ':!.env' \
+  ':!.env.*' \
+  ':!*.log' \
+  ':!pipeline/vps-connection.json' \
+  ':!pipeline/bootstrap-result.json' \
+  ':!pipeline/.git-credentials' \
+  ':!pipeline/bootstrap*.json' \
+  ':!pipeline/bootstrap*.log' \
+  ':!pipeline/bootstrap*.pid' \
+  ':!pipeline/bootstrap*.exit' \
+  ':!pipeline/RESULT.md' \
+  ':!pipeline/HUMAN_REVIEW.md'
 if git diff --cached --quiet; then
   echo "STATUS:NOTHING_TO_COMMIT"
 else

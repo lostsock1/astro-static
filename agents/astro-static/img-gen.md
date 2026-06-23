@@ -71,13 +71,21 @@ Authorization: Bearer $PPQ_API_KEY
 Content-Type: application/json
 ```
 
-The API key is in the `PPQ_API_KEY` environment variable. If it's missing, fail immediately by emitting `STATUS:MISSING_PPQ_API_KEY` and exiting non-zero. (This token is in the orchestrator's grammar; the caller will surface it.)
+Resolve the API key through the shared astro-static helper before every generation attempt:
+```bash
+source ~/.config/opencode/astro-static/phases/ppq-auth.sh
+ppq_require_api_key || exit 1
+echo "PPQ credential source: ${PPQ_API_KEY_SOURCE}" >&2
+```
+The helper first honors `PPQ_API_KEY`, then reads OpenCode's PPQ credentials from `/Users/djesys/.local/share/opencode/auth.json` and `/Users/djesys/.config/opencode/opencode.json`. If no key is found, it emits `STATUS:MISSING_PPQ_API_KEY` and returns non-zero. Never print the key value.
 
 ## API Call Pattern
 
 ```bash
 TMP_RESPONSE=$(mktemp /tmp/ppq-image.XXXXXX.json)
 trap 'rm -f "$TMP_RESPONSE"' EXIT
+source ~/.config/opencode/astro-static/phases/ppq-auth.sh
+ppq_require_api_key || exit 1
 
 curl --fail --show-error --connect-timeout 15 --max-time 120 -s -X POST https://api.ppq.ai/v1/images/generations \
   -H "Authorization: Bearer $PPQ_API_KEY" \
@@ -179,3 +187,4 @@ ERROR_MESSAGE: <empty on success>
 2. Always validate output file is non-empty and larger than 5 KB before reporting success
 3. Always use a unique `mktemp` response file and clean it up with `trap`; never share a fixed `/tmp/ppq-response.json` across concurrent agents
 4. Never expose the API key in output
+5. Always use `ppq-auth.sh` and report only `PPQ_API_KEY_SOURCE`, never the secret itself

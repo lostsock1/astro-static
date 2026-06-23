@@ -24,7 +24,8 @@ except ImportError:
     HAVE_JSONSCHEMA = False
 
 import os
-_BASE = Path(__file__).resolve().parent.parent
+_HERE = Path(__file__).resolve().parent
+_BASE = _HERE if (_HERE / 'agents' / 'astro-static' / 'schemas').exists() else _HERE.parent
 _DEFAULT_SCHEMA_DIR = _BASE / 'agents' / 'astro-static' / 'schemas'
 SCHEMA_DIR = Path(os.environ.get('ASTRO_STATIC_SCHEMA_DIR', _DEFAULT_SCHEMA_DIR))
 
@@ -417,6 +418,35 @@ def validate_value(value: Any, schema: dict[str, Any], root: dict[str, Any], pat
 
 SECRET_ARTIFACTS = {'vps-connection.json', 'bootstrap-result.json'}
 
+CANONICAL_PACKAGE_RANGES = {
+    'astro': '^6.4.8',
+    '@astrojs/node': '^10.1.4',
+    '@astrojs/mdx': '^6.0.3',
+    '@astrojs/react': '^5.0.7',
+    '@tailwindcss/vite': '^4.3.1',
+    'tailwindcss': '^4.3.1',
+    '@tinacms/astro': '^0.5.0',
+    'tinacms': '^3.9.3',
+    '@tinacms/cli': '^2.5.1',
+}
+
+REQUIRED_GITIGNORE_PATTERNS = {
+    'node_modules/',
+    'dist/',
+    '.astro/',
+    '.opencode/',
+    '.env',
+    '.env.*',
+    '*.log',
+    'pipeline/vps-connection.json',
+    'pipeline/.git-credentials',
+    'pipeline/bootstrap*.log',
+    'pipeline/bootstrap*.pid',
+    'pipeline/bootstrap*.exit',
+    'pipeline/RESULT.md',
+    'pipeline/HUMAN_REVIEW.md',
+}
+
 
 def validate_secret_permissions(artifact_path: Path, artifact_name: str, issues: list[Issue]) -> None:
     """Secret-bearing pipeline artifacts must never be group/world-readable."""
@@ -430,6 +460,120 @@ def validate_secret_permissions(artifact_path: Path, artifact_name: str, issues:
             'error', artifact_name,
             f'secret file permissions must be 0600, got {mode:04o}; chmod 0600 {artifact_name}',
         ))
+
+
+def validate_package_matrix(deps: dict[str, Any], issues: list[Issue]) -> None:
+    """Keep generated projects pinned to the pipeline's tested Astro/Tina stack."""
+    for package_name, expected_range in CANONICAL_PACKAGE_RANGES.items():
+        actual = deps.get(package_name)
+        if actual is None:
+            issues.append(Issue(
+                'error', 'package.json',
+                f'missing canonical dependency {package_name}@{expected_range}',
+            ))
+        elif actual != expected_range:
+            issues.append(Issue(
+                'error', 'package.json',
+                f'{package_name} must use tested range {expected_range}, got {actual!r}',
+            ))
+
+
+def validate_gitignore_safety(project_root: Path, issues: list[Issue]) -> None:
+    """Prevent Gitea pushes from committing generated output or local secrets."""
+    gitignore = project_root / '.gitignore'
+    if not gitignore.exists():
+        issues.append(Issue('error', '.gitignore', 'missing .gitignore — generated output and secrets may be committed'))
+        return
+
+    patterns = {
+        line.strip()
+        for line in gitignore.read_text(errors='replace').splitlines()
+        if line.strip() and not line.strip().startswith('#')
+    }
+    for pattern in sorted(REQUIRED_GITIGNORE_PATTERNS):
+        if pattern not in patterns:
+            issues.append(Issue(
+                'error', '.gitignore',
+                f'missing required ignore pattern for safe pipeline pushes: {pattern}',
+            ))
+
+    for forbidden in ('admin/', 'admin/**', '/admin/', '/admin/**'):
+        if forbidden in patterns:
+            issues.append(Issue(
+                'error', '.gitignore',
+                'admin/ must not be ignored — TinaCMS admin SPA is built locally and committed/pushed',
+            ))
+
+    if (project_root / 'admin/.gitignore').exists():
+        issues.append(Issue(
+            'error', 'admin/.gitignore',
+            'remove admin/.gitignore — tinacms build creates it but the pipeline must commit admin/index.html and assets',
+        ))
+
+
+def validate_tina_tsconfig(project_root: Path, issues: list[Issue]) -> None:
+    tsconfig = project_root / 'tsconfig.json'
+    if not tsconfig.exists():
+        issues.append(Issue('error', 'tsconfig.json', 'TinaCMS projects must include tsconfig.json with generated-directory excludes'))
+        return
+    try:
+        data = json.loads(tsconfig.read_text())
+    except Exception as exc:
+        issues.append(Issue('error', 'tsconfig.json', f'invalid JSON: {exc}'))
+        return
+    excludes = data.get('exclude')
+    if not isinstance(excludes, list):
+        issues.append(Issue('error', 'tsconfig.json', 'must set exclude to include admin/**, dist/**, and node_modules/**'))
+        return
+    exclude_set = {item for item in excludes if isinstance(item, str)}
+    for required in ('admin/**', 'dist/**', 'node_modules/**'):
+        if required not in exclude_set:
+            issues.append(Issue(
+                'error', 'tsconfig.json',
+                f'missing exclude entry {required}; generated Tina/build output must not be type-checked',
+            ))
+
+
+def validate_tina_auth_user_shape(tina_content: str, issues: list[Issue]) -> None:
+    if 'PasswordAuthProvider' not in tina_content:
+        return
+    if re.search(r'return\s+\(\s*await\s+fetch\(["\']/api/tina/auth-check["\']\)\s*\)\.ok', tina_content):
+        issues.append(Issue(
+            'error', 'tina/config.ts',
+            'PasswordAuthProvider.getUser must return a user object with name/email after auth-check succeeds; returning boolean .ok makes Tina read undefined.name',
+        ))
+        return
+    returns_named_user = re.search(r'return\s+\{[^}]*\bname\s*:', tina_content, re.DOTALL) is not None
+    probes_auth_check = '/api/tina/auth-check' in tina_content
+    if not returns_named_user or not probes_auth_check:
+        issues.append(Issue(
+            'error', 'tina/config.ts',
+            'PasswordAuthProvider.getUser must probe /api/tina/auth-check and return a user object containing name',
+        ))
+
+
+def validate_tina_admin_artifacts(project_root: Path, issues: list[Issue]) -> None:
+    admin_dir = project_root / 'admin'
+    required_files = [
+        ('admin/index.html', project_root / 'admin/index.html'),
+        ('admin/login.html', project_root / 'admin/login.html'),
+        ('admin/bridge.js', project_root / 'admin/bridge.js'),
+        ('tina/__generated__/_schema.json', project_root / 'tina/__generated__/_schema.json'),
+    ]
+    for label, path in required_files:
+        if not path.exists():
+            issues.append(Issue('error', label, f'missing TinaCMS deployment artifact: {label}'))
+    if admin_dir.exists():
+        try:
+            admin_size = sum(path.stat().st_size for path in admin_dir.rglob('*') if path.is_file())
+        except OSError as exc:
+            issues.append(Issue('error', 'admin/', f'cannot stat admin artifacts: {exc}'))
+        else:
+            if admin_size <= 50 * 1024:
+                issues.append(Issue('error', 'admin/', f'admin SPA too small ({admin_size} bytes); run tinacms-local-build.sh'))
+    bridge = project_root / 'admin/bridge.js'
+    if bridge.exists() and bridge.stat().st_size <= 1000:
+        issues.append(Issue('error', 'admin/bridge.js', 'bridge.js is too small; copy node_modules/@tinacms/bridge/dist/index.js, not the @tinacms/astro re-export stub'))
 
 
 def validate_safe_relative_artifact_path(
@@ -784,6 +928,9 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
         else:
             issues.append(Issue('error', 'src/layouts/BaseLayout.astro', f'missing file: {base_layout}'))
 
+    if phase_name in {'build', 'final'} or require_all:
+        validate_gitignore_safety(project_root, issues)
+
     package_json = project_root / 'package.json'
     if package_json.exists():
         try:
@@ -792,6 +939,8 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
             issues.append(Issue('error', 'package.json', f'invalid JSON: {exc}'))
             package_data = {}
         deps = {**package_data.get('dependencies', {}), **package_data.get('devDependencies', {})}
+        if phase_name in {'build', 'final'} or require_all:
+            validate_package_matrix(deps, issues)
         has_tina = '@tinacms/astro' in deps or 'tinacms' in deps
         if has_tina:
             tina_config = project_root / 'tina/config.ts'
@@ -808,6 +957,7 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                     issues.append(Issue('error', 'tina/config.ts', 'LocalAuthProvider is not allowed in production astro-static; use the PasswordAuthProvider contract'))
                 if 'authProvider' not in tina_content or 'PasswordAuthProvider' not in tina_content:
                     issues.append(Issue('error', 'tina/config.ts', 'self-hosted TinaCMS config must set authProvider with PasswordAuthProvider'))
+                validate_tina_auth_user_shape(tina_content, issues)
                 if 'router:' not in tina_content:
                     issues.append(Issue('error', 'tina/config.ts', 'maximum TinaCMS visual editing requires collection ui.router entries that open the live preview route'))
                 # Check build config — publicFolder must be "." so admin SPA
@@ -835,6 +985,10 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                         issues.append(Issue('error', 'astro.config.mjs', f'missing {label}'))
             if not island_route.exists():
                 issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'missing Tina visual editing island route'))
+            else:
+                island_content = island_route.read_text()
+                if 'export const ALL' in island_content or 'export const POST' not in island_content:
+                    issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'Tina visual editing island route must export POST, not ALL'))
             if not api_route.exists():
                 issues.append(Issue('error', 'src/pages/api/tina/[...routes].ts', 'missing Tina self-hosted GraphQL route'))
             else:
@@ -864,7 +1018,12 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                 issues.append(Issue('error', 'src/lib/tina', 'maximum TinaCMS visual editing requires requestWithMetadata() data loaders'))
             if 'tinaField' not in all_source or 'data-tina-field' not in all_source:
                 issues.append(Issue('error', 'src/components', 'maximum TinaCMS visual editing requires tinaField() + data-tina-field click-to-edit markers on visible editable DOM nodes'))
+            validate_tina_tsconfig(project_root, issues)
+            if phase_name == 'final' or require_all:
+                validate_tina_admin_artifacts(project_root, issues)
             validate_tina_editable_surfaces(project_root, project_source_files, issues)
+    elif phase_name in {'build', 'final'} or require_all:
+        issues.append(Issue('error', 'package.json', f'missing file: {package_json}'))
 
     # Check that gallery/content pages reference images or have fallback
     gallery_page = project_root / 'src/pages/galerie.astro'

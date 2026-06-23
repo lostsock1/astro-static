@@ -101,7 +101,7 @@ GITEA_ADMIN_USER="${GITEA_ADMIN_USER:-siteadmin}"
 # Strip =+/ and newlines from base64: those characters break the password when
 # it's embedded in URL contexts (git remote http://user:pass@host/...) or
 # argv expansion. Keep this in sync with bg-bootstrap.sh's generator.
-GITEA_ADMIN_PASS="${GITEA_ADMIN_PASS:-$(openssl rand -base64 24 | tr -d '=+/\n' | cut -c1-24)}"
+GITEA_ADMIN_PASS="${GITEA_ADMIN_PASS:-}"
 GITEA_ADMIN_EMAIL="${GITEA_ADMIN_EMAIL:-admin@localhost}"
 PROJECT_NAME="${PROJECT_NAME:-default}"
 GITEA_VERSION="1.25.5"
@@ -141,6 +141,19 @@ SUMMARY_PATH="${STATE_DIR}/installation-summary-${PROJECT_NAME}.md"
 DIAGNOSTICS_PATH="${STATE_DIR}/installation-diagnostics-${PROJECT_NAME}-${INSTALL_STAMP}.tsv"
 
 mkdir -p "${STATE_DIR}" "${PROJECT_STATE_DIR}"
+GITEA_PASS_FILE="${STATE_DIR}/gitea-admin-pass"
+if [[ -z "${GITEA_ADMIN_PASS:-}" ]]; then
+  if [[ -f "$GITEA_PASS_FILE" ]]; then
+    GITEA_ADMIN_PASS="$(head -n 1 "$GITEA_PASS_FILE" | tr -d '\r\n')"
+  else
+    GITEA_ADMIN_PASS="$(openssl rand -base64 24 | tr -d '=+/\n' | cut -c1-24)"
+    printf '%s\n' "$GITEA_ADMIN_PASS" > "$GITEA_PASS_FILE"
+    chmod 0600 "$GITEA_PASS_FILE"
+  fi
+else
+  printf '%s\n' "$GITEA_ADMIN_PASS" > "$GITEA_PASS_FILE"
+  chmod 0600 "$GITEA_PASS_FILE"
+fi
 touch "$INSTALL_LOG_PATH" "$DIAGNOSTICS_PATH"
 chmod 0600 "$INSTALL_LOG_PATH" "$DIAGNOSTICS_PATH"
 ln -sfn "$INSTALL_LOG_PATH" "${STATE_DIR}/latest-install.log"
@@ -204,9 +217,9 @@ _write_installation_summary() {
     echo
     echo "## Credentials"
     echo "- Gitea username: ${_GITEA_ADMIN_USER}"
-    echo "- Gitea password: ${_GITEA_ADMIN_PASS}"
-    echo "- TinaCMS admin password: ${_TINA_ADMIN_PASSWORD}"
-    echo "- Credential source of truth: ${RESULT_PATH} (0600)"
+    echo "- Gitea password: <redacted>"
+    echo "- TinaCMS admin password: <redacted>"
+    echo "- Credential source of truth: ${RESULT_PATH} and pipeline/vps-connection.json (0600; never commit)"
     echo
     echo "## Installation Diagnostics"
     echo "All warnings, errors, notable skips, inefficiencies, bugs, and manual follow-up points recorded during installation:"
@@ -316,7 +329,7 @@ _ensure_result_and_perms() {
 trap _ensure_result_and_perms EXIT
 
 # --- Detect IP ---
-SERVER_IP=$(ip -4 addr show scope global | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+SERVER_IP=$(ip -4 addr show scope global | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || true)
 if [[ -z "$SERVER_IP" ]]; then
   SERVER_IP=$(curl -4 -s ifconfig.me || echo "127.0.0.1")
 fi
@@ -378,7 +391,7 @@ if [[ "$DOMAIN" == "auto" || "$DOMAIN" == "none" ]]; then
           base=$(basename "$f" .caddy)
           [[ "$base" == "${PROJECT_NAME}" ]] && continue
           [[ "$base" == _* ]] && continue
-          grep -oE '^:[0-9]+' "$f" 2>/dev/null | tr -d ':'
+          grep -oE '^:[0-9]+' "$f" 2>/dev/null | tr -d ':' || true
         done | sort -un
       )
       port_free() { ! echo "$USED_PORTS" | grep -qx "$1"; }
@@ -436,7 +449,7 @@ if [[ -z "$ASTRO_SSR_PORT" ]]; then
     for f in /etc/caddy/sites/*.caddy; do
       base=$(basename "$f" .caddy)
       [[ "$base" == "${PROJECT_NAME}" ]] && continue
-      grep -oE 'reverse_proxy[[:space:]]+127\.0\.0\.1:[0-9]+' "$f" 2>/dev/null | grep -oE '[0-9]+$'
+      grep -oE 'reverse_proxy[[:space:]]+127\.0\.0\.1:[0-9]+' "$f" 2>/dev/null | grep -oE '[0-9]+$' || true
     done | sort -un
   )
   ssr_port_free() { ! echo "$USED_SSR_PORTS" | grep -qx "$1"; }
@@ -900,8 +913,8 @@ if $SYSTEM_NEEDED; then
   if [[ "$CURRENT_GITEA_VERSION" != "$GITEA_VERSION" ]]; then
     wget -q -O /usr/local/bin/gitea.new \
       "https://dl.gitea.com/gitea/${GITEA_VERSION}/gitea-${GITEA_VERSION}-linux-amd64"
-    chmod +x /usr/local/bin/gitea.new
-    mv /usr/local/bin/gitea.new /usr/local/bin/gitea
+    install -m 0755 -o root -g root /usr/local/bin/gitea.new /usr/local/bin/gitea
+    rm -f /usr/local/bin/gitea.new
   else
     skip "Gitea ${GITEA_VERSION} already installed"
   fi
@@ -967,10 +980,13 @@ MODE      = console
 LEVEL     = Info
 ROOT_PATH = /var/lib/gitea/log
 EOF
-    chown git:git /etc/gitea/app.ini
+    chown root:git /etc/gitea/app.ini
+    chmod 0640 /etc/gitea/app.ini
   else
     skip "/etc/gitea/app.ini exists — preserving operator config"
   fi
+  chown root:git /etc/gitea/app.ini
+  chmod 0640 /etc/gitea/app.ini
 
   if [[ ! -f /etc/systemd/system/gitea.service ]]; then
     cat > /etc/systemd/system/gitea.service << 'EOF'
@@ -1036,14 +1052,14 @@ if $SYSTEM_NEEDED; then
     skip "Caddy already installed"
   fi
 
-  mkdir -p /etc/caddy/sites
+  install -d -m 0755 /etc/caddy /etc/caddy/sites
 
   # Migrate legacy single-file Caddyfile to imports pattern if needed.
   # We consider the Caddyfile "legacy" if it contains anything besides
   # comments/whitespace and has no `import /etc/caddy/sites/*` line.
   if [[ -f /etc/caddy/Caddyfile ]] && ! grep -q 'import /etc/caddy/sites/' /etc/caddy/Caddyfile; then
     if grep -qE '^[^#[:space:]]' /etc/caddy/Caddyfile; then
-      cp /etc/caddy/Caddyfile "/etc/caddy/sites/legacy.caddy"
+      install -m 0644 /etc/caddy/Caddyfile "/etc/caddy/sites/legacy.caddy"
       log "Migrated existing Caddyfile → /etc/caddy/sites/legacy.caddy"
     fi
     cat > /etc/caddy/Caddyfile << 'CEOF'
@@ -1053,11 +1069,13 @@ if $SYSTEM_NEEDED; then
 
 import /etc/caddy/sites/*.caddy
 CEOF
+    chmod 0644 /etc/caddy/Caddyfile
   elif [[ ! -f /etc/caddy/Caddyfile ]]; then
     cat > /etc/caddy/Caddyfile << 'CEOF'
 # Managed by site-pipeline setup-vps.sh
 import /etc/caddy/sites/*.caddy
 CEOF
+    chmod 0644 /etc/caddy/Caddyfile
   fi
 
   # Ensure a global git.* site fragment exists (shared across all projects)
@@ -1069,6 +1087,7 @@ ${GIT_HOST} {
     reverse_proxy 127.0.0.1:3000
 }
 CEOF
+        chmod 0644 /etc/caddy/sites/_gitea.caddy
       else
         # sslip.io without TLS — prefix http:// to prevent Caddy auto-HTTPS
         cat > /etc/caddy/sites/_gitea.caddy << CEOF
@@ -1076,6 +1095,7 @@ http://${GIT_HOST} {
     reverse_proxy 127.0.0.1:3000
 }
 CEOF
+        chmod 0644 /etc/caddy/sites/_gitea.caddy
       fi
     else
       # Raw IP, direct access — Gitea listens on :3000 directly
@@ -1084,6 +1104,7 @@ CEOF
 # When upgrading to a public IP or domain, replace with:
 #   git.<IP>.sslip.io { reverse_proxy 127.0.0.1:3000 }
 CEOF
+      chmod 0644 /etc/caddy/sites/_gitea.caddy
     fi
   fi
 
@@ -1098,8 +1119,11 @@ if $SYSTEM_NEEDED; then
   CURRENT_NODE=$(node --version 2>/dev/null | grep -oP '^v\K[0-9]+' || echo "0")
   if [[ "$CURRENT_NODE" -lt "$NODE_MAJOR" ]]; then
     mkdir -p /etc/apt/keyrings
+    TMP_NODESOURCE_KEY="$(mktemp /tmp/nodesource.XXXXXX.gpg)"
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-      | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg 2>/dev/null
+      | gpg --dearmor --yes -o "$TMP_NODESOURCE_KEY" 2>/dev/null
+    install -m 0644 -o root -g root "$TMP_NODESOURCE_KEY" /etc/apt/keyrings/nodesource.gpg
+    rm -f "$TMP_NODESOURCE_KEY"
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
       | tee /etc/apt/sources.list.d/nodesource.list >/dev/null
     wait_for_apt_lock 30
@@ -1314,7 +1338,8 @@ if systemctl is-active --quiet gitea 2>/dev/null; then
     if [[ "$AUTH_VERIFY" == "200" ]]; then
       log "Gitea admin ${GITEA_ADMIN_USER} ready"
     else
-      warn "Gitea admin ${GITEA_ADMIN_USER} still not working (status=${AUTH_VERIFY}) — Phase 11 will skip repo creation"
+      err "Gitea admin ${GITEA_ADMIN_USER} still not working (status=${AUTH_VERIFY}) — cannot continue safely"
+      exit 1
     fi
   else
     skip "Gitea admin ${GITEA_ADMIN_USER} verified"
@@ -1412,7 +1437,8 @@ ASTROCONF
     "jsxImportSource": "react",
     "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] }
-  }
+  },
+  "exclude": ["admin/**", "dist/**", "node_modules/**"]
 }
 TSCONF
 
@@ -1570,7 +1596,11 @@ class PasswordAuthProvider extends AbstractAuthProvider {
     return { access_token: "LOCAL", id_token: "LOCAL", refresh_token: "LOCAL" };
   }
   async getUser() {
-    try { return (await fetch("/api/tina/auth-check")).ok; } catch { return false; }
+    try {
+      const response = await fetch("/api/tina/auth-check");
+      if (!response.ok) return false;
+      return { name: "Site Admin", email: "admin@localhost" };
+    } catch { return false; }
   }
   async getToken() { return { id_token: "" }; }
   async logout() {
@@ -1646,7 +1676,7 @@ import { experimental_createIslandRoute } from "@tinacms/astro/experimental";
 const islands = {} as Record<string, { component: any; wrapper: string }>;
 
 export const prerender = false;
-export const ALL: APIRoute = experimental_createIslandRoute(islands);
+export const POST: APIRoute = experimental_createIslandRoute(islands);
 TINAISLAND
 
   cat > tina/databaseClient.ts << 'TINADB'
@@ -2004,6 +2034,8 @@ pipeline/RESULT.md
 pipeline/HUMAN_REVIEW.md
 .opencode/
 .env
+.env.*
+*.log
 # Lockfiles are regenerated per-deploy by the auto-rebuild watcher; not part of
 # the source-of-truth repo for this static-site pipeline.
 bun.lockb
@@ -2082,8 +2114,17 @@ ${SITE_HOST} {
         root * ${SITE_DIR}
         file_server
     }
-    handle {
+    @static_files {
+        file {
+            try_files {path} {path}/index.html
+        }
+    }
+    handle @static_files {
+        rewrite * {file_match.relative}
         file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:${ASTRO_SSR_PORT}
     }
     header {
         X-Content-Type-Options "nosniff"
@@ -2119,8 +2160,17 @@ ${SITE_HOST} {
         root * ${SITE_DIR}
         file_server
     }
-    handle {
+    @static_files {
+        file {
+            try_files {path} {path}/index.html
+        }
+    }
+    handle @static_files {
+        rewrite * {file_match.relative}
         file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:${ASTRO_SSR_PORT}
     }
     header {
         X-Content-Type-Options "nosniff"
@@ -2152,8 +2202,17 @@ CEOF
         root * ${SITE_DIR}
         file_server
     }
-    handle {
+    @static_files {
+        file {
+            try_files {path} {path}/index.html
+        }
+    }
+    handle @static_files {
+        rewrite * {file_match.relative}
         file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:${ASTRO_SSR_PORT}
     }
     header {
         X-Content-Type-Options "nosniff"
@@ -2166,6 +2225,7 @@ CEOF
     ufw allow "${SITE_PORT}/tcp" >/dev/null 2>&1 || true
   fi
 fi
+chmod 0644 "$CADDY_SITE_FILE" 2>/dev/null || true
 
 # Validate and reload Caddy
 # IMPORTANT: Validate the main Caddyfile (which imports all fragments),
@@ -2173,10 +2233,9 @@ fi
 if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
   systemctl reload caddy 2>/dev/null || systemctl restart caddy
 else
-  # Non-fatal: site fragment is preserved on disk; Caddy just doesn't reload.
-  # The orchestrator can fix the config and reload manually.
-  warn "Caddy config invalid after adding ${PROJECT_NAME} fragment — skipping reload"
-  warn "Fragment saved at ${CADDY_SITE_FILE} — fix and run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && systemctl reload caddy"
+  err "Caddy config invalid after adding ${PROJECT_NAME} fragment"
+  err "Fragment saved at ${CADDY_SITE_FILE} — fix and run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile && systemctl reload caddy"
+  exit 1
 fi
 
 # =============================================================================
@@ -2187,8 +2246,8 @@ log "Phase 11/13: Gitea repo ${PROJECT_NAME}"
 GITEA_API="http://127.0.0.1:3000/api/v1"
 AUTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -u "${GITEA_ADMIN_USER}:${GITEA_ADMIN_PASS}" "${GITEA_API}/user" 2>/dev/null || echo "000")
 if [[ "$AUTH_STATUS" != "200" ]]; then
-  warn "Gitea credentials invalid for ${GITEA_ADMIN_USER} (status=${AUTH_STATUS}) — skipping repo creation (non-fatal)"
-  GITEA_AUTH_OK=false
+  err "Gitea credentials invalid for ${GITEA_ADMIN_USER} (status=${AUTH_STATUS}) — cannot create repo safely"
+  exit 1
 else
   GITEA_AUTH_OK=true
 
@@ -2305,7 +2364,7 @@ fi
 
 TINACMS_AUTH_TOKEN="${EXISTING_TINA_TOKEN:-$(openssl rand -hex 32)}"
 TINA_ADMIN_PASSWORD="${EXISTING_TINA_ADMIN_PASS:-$(openssl rand -base64 12)}"
-TINACMS_GITEA_TOKEN="$EXISTING_GITEA_API_TOKEN"
+TINACMS_GITEA_TOKEN="${EXISTING_GITEA_API_TOKEN:-}"
 if [[ -z "$TINACMS_GITEA_TOKEN" && "${GITEA_AUTH_OK:-false}" == "true" ]]; then
   TOKEN_NAME="tinacms-${PROJECT_NAME}"
   TOKEN_JSON=$(curl -s -X POST "${GITEA_API}/users/${GITEA_ADMIN_USER}/tokens" \
@@ -2405,8 +2464,9 @@ if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2
   systemctl reload caddy 2>/dev/null || systemctl restart caddy
   log "Final Caddy reload successful — all site fragments active"
 else
-  warn "Final Caddy validation still failing — Caddy may need manual config fix"
-  warn "Run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+  err "Final Caddy validation still failing — Caddy site is not safe to publish"
+  err "Run: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+  exit 1
 fi
 
 # =============================================================================
@@ -2416,7 +2476,11 @@ GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 NODE_VERSION=$(node --version 2>/dev/null || echo NONE)
 BUN_VERSION=$(bun --version 2>/dev/null || echo NONE)
 SYSTEM_BOOTSTRAPPED=$([ -f "$BOOTSTRAP_MARKER" ] && echo YES || echo NO)
-SYSTEM_PHASES_RUN=$($SYSTEM_NEEDED && echo YES || echo NO)
+if $SYSTEM_NEEDED; then
+  SYSTEM_PHASES_RUN=YES
+else
+  SYSTEM_PHASES_RUN=NO
+fi
 GITEA_REPO_URL="${GITEA_PUBLIC_URL}/${GITEA_ADMIN_USER}/${PROJECT_NAME}.git"
 GITEA_REPO_SSH="ssh://git@${SERVER_IP}/home/git/gitea-repositories/${GITEA_ADMIN_USER}/${PROJECT_NAME}.git"
 _write_installation_summary 0
@@ -2473,4 +2537,4 @@ PROJECT_NAME=${PROJECT_NAME}
 ===END_RESULT===
 RESULT
 
-log "VPS setup complete for ${PROJECT_NAME} (system_phases_run=$($SYSTEM_NEEDED && echo yes || echo no))"
+log "VPS setup complete for ${PROJECT_NAME} (system_phases_run=${SYSTEM_PHASES_RUN})"

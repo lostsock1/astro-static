@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -126,9 +127,22 @@ class AstroStaticRegressionTests(unittest.TestCase):
             '@import "tailwindcss";\n@theme { --color-background: oklch(0.94 0.01 140); --font-body: "Inter"; }\n',
         )
         (project / "package.json").write_text(json.dumps({
-            "dependencies": {"astro": "^6.4.8", "@tinacms/astro": "^0.5.0", "tinacms": "^3.9.3"},
-            "devDependencies": {},
+            "dependencies": {
+                "astro": "^6.4.8",
+                "@astrojs/node": "^10.1.4",
+                "@astrojs/mdx": "^6.0.3",
+                "@astrojs/react": "^5.0.7",
+                "@tailwindcss/vite": "^4.3.1",
+                "tailwindcss": "^4.3.1",
+                "@tinacms/astro": "^0.5.0",
+                "tinacms": "^3.9.3",
+            },
+            "devDependencies": {"@tinacms/cli": "^2.5.1"},
         }))
+        (project / ".gitignore").write_text(
+            "node_modules/\ndist/\n.astro/\n.opencode/\n.env\npipeline/vps-connection.json\npipeline/.git-credentials\npipeline/bootstrap*.log\n"
+            ".env.*\n*.log\npipeline/bootstrap*.pid\npipeline/bootstrap*.exit\npipeline/RESULT.md\npipeline/HUMAN_REVIEW.md\n"
+        )
         (project / "astro.config.mjs").write_text(
             'import tina from "@tinacms/astro/integration";\n'
             'import { tinaAdminDevRedirect } from "@tinacms/astro/vite";\n'
@@ -139,11 +153,15 @@ class AstroStaticRegressionTests(unittest.TestCase):
         (project / "src/content/pages").mkdir(parents=True)
         (project / "tina/config.ts").write_text(
             'import { AbstractAuthProvider, defineConfig } from "tinacms";\n'
-            'class PasswordAuthProvider extends AbstractAuthProvider { authenticate(){} getUser(){ return fetch("/api/tina/auth-check") } getToken(){ return { id_token: "" } } logout(){ return fetch("/api/tina/logout", { method: "POST" }) } }\n'
+            'class PasswordAuthProvider extends AbstractAuthProvider { authenticate(){} async getUser(){ const response = await fetch("/api/tina/auth-check"); if (!response.ok) return false; return { name: "Site Admin", email: "admin@localhost" }; } getToken(){ return { id_token: "" } } logout(){ return fetch("/api/tina/logout", { method: "POST" }) } }\n'
             'export default defineConfig({ clientId: null, token: null, authProvider: new PasswordAuthProvider(), contentApiUrlOverride: "/api/tina/gql", build: { outputFolder: "admin", publicFolder: "." }, schema: { collections: [{ name: "page", path: "src/content/pages", ui: { router: () => "/" }, fields: [{ name: "title", type: "string" }, { name: "bullets", type: "string", list: true }, { name: "heroVideo", type: "string" }] }] } });\n'
         )
+        (project / "tsconfig.json").write_text(json.dumps({
+            "extends": "astro/tsconfigs/strict",
+            "exclude": ["admin/**", "dist/**", "node_modules/**"],
+        }))
         (project / "src/pages/tina-island").mkdir(parents=True)
-        (project / "src/pages/tina-island/[name].ts").write_text("export const prerender = false;\n")
+        (project / "src/pages/tina-island/[name].ts").write_text("export const prerender = false;\nexport const POST = 'island';\n")
         (project / "src/pages/api/tina").mkdir(parents=True)
         (project / "src/pages/api/tina/[...routes].ts").write_text(
             'export const prerender = false;\n'
@@ -335,30 +353,46 @@ class AstroStaticRegressionTests(unittest.TestCase):
             'UNIT="astro-ssr-$(basename "$SITE_DIR")"',
             'sudo -n systemctl restart "$UNIT"',
             'bun run check',
+            '@static_files',
+            'reverse_proxy 127.0.0.1:${ASTRO_SSR_PORT}',
+            'chmod 0644 "$CADDY_SITE_FILE"',
         ]:
             self.assertIn(expected, text)
         self.assertNotIn('dist/index.html', text)
+        self.assertIn('err "Caddy config invalid after adding ${PROJECT_NAME} fragment"', text)
+        self.assertIn('err "Final Caddy validation still failing', text)
+        self.assertIn('if $SYSTEM_NEEDED; then\n  SYSTEM_PHASES_RUN=YES', text)
+        self.assertNotIn('SYSTEM_PHASES_RUN=$($SYSTEM_NEEDED', text)
 
     def test_setup_vps_scaffold_implements_tina_password_auth_contract(self) -> None:
         text = (ROOT / "setup-vps.sh").read_text()
         for expected in [
             "class PasswordAuthProvider",
             "authProvider: new PasswordAuthProvider()",
+            'return { name: "Site Admin", email: "admin@localhost" }',
             "function PasswordBackendAuthProvider",
             "POST /api/tina/login",
             "POST /api/tina/logout",
             "GET /api/tina/auth-check",
             "tina_admin_session",
             'Content-Security-Policy "frame-ancestors',
+            'export const POST: APIRoute = experimental_createIslandRoute(islands);',
+            '"exclude": ["admin/**", "dist/**", "node_modules/**"]',
         ]:
             self.assertIn(expected, text)
+        self.assertIn('err "Gitea admin ${GITEA_ADMIN_USER} still not working', text)
+        self.assertIn('err "Gitea credentials invalid for ${GITEA_ADMIN_USER}', text)
         self.assertNotIn('LocalBackendAuthProvider', text)
         self.assertNotIn('X-Frame-Options "DENY"', text)
+        self.assertNotIn('export const ALL: APIRoute = experimental_createIslandRoute(islands);', text)
 
     def test_tinacms_local_build_requires_login_and_bridge_artifacts(self) -> None:
         text = (ROOT / "phases/tinacms-local-build.sh").read_text()
         self.assertIn('fail "no_admin_login_html"', text)
         self.assertIn('fail "no_tina_bridge"', text)
+        self.assertIn('auth_user_shape_missing', text)
+        self.assertIn('island_route_must_export_post', text)
+        self.assertIn('admin_gitignore_still_present', text)
 
     def test_frontend_builder_is_local_codegen_only(self) -> None:
         text = (AGENTS / "frontend-builder.md").read_text()
@@ -384,6 +418,15 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertNotIn('timeout 180 bun install --silent', text)
         self.assertNotIn('timeout 180 bun run check', text)
         self.assertNotIn('timeout 300 bun run build', text)
+
+    def test_build_deployer_uses_ssr_entry_and_live_smoke_contract(self) -> None:
+        text = (AGENTS / "build-deployer.md").read_text()
+        self.assertIn('dist/server/entry.mjs', text)
+        self.assertIn('BUILD_MODE=ssr', text)
+        self.assertIn('SITE_URL=$(jq -r', text)
+        self.assertIn('SITE_URL="$SITE_URL" SITE_DIR="$SITE_DIR"', text)
+        self.assertIn('STATUS:BUILD_FAILED reason=no_build_output', text)
+        self.assertIn("elif test -f '$SITE_DIR/dist/client/index.html'; then printf static", text)
 
     def test_validator_requires_tina_files_when_tina_dependency_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -467,6 +510,80 @@ class AstroStaticRegressionTests(unittest.TestCase):
             self.assertIn("LocalAuthProvider is not allowed", result.stdout)
             self.assertIn("PasswordAuthProvider", result.stdout)
 
+    def test_validator_rejects_password_auth_get_user_boolean_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_tina_project(project)
+            (project / "tina/config.ts").write_text(
+                'import { AbstractAuthProvider, defineConfig } from "tinacms";\n'
+                'class PasswordAuthProvider extends AbstractAuthProvider { async getUser(){ try { return (await fetch("/api/tina/auth-check")).ok; } catch { return false; } } }\n'
+                'export default defineConfig({ clientId: null, token: null, authProvider: new PasswordAuthProvider(), contentApiUrlOverride: "/api/tina/gql", build: { outputFolder: "admin", publicFolder: "." }, schema: { collections: [{ name: "page", path: "src/content/pages", ui: { router: () => "/" }, fields: [] }] } });\n'
+            )
+
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "build", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PasswordAuthProvider.getUser", result.stdout)
+            self.assertIn("name", result.stdout)
+
+    def test_validator_rejects_tina_island_all_handler(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_tina_project(project)
+            (project / "src/pages/tina-island/[name].ts").write_text(
+                'export const prerender = false;\nexport const ALL = experimental_createIslandRoute({});\n'
+            )
+
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "build", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tina-island", result.stdout)
+            self.assertIn("POST", result.stdout)
+
+    def test_validator_requires_tina_tsconfig_excludes_generated_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_tina_project(project)
+            (project / "tsconfig.json").write_text(json.dumps({"extends": "astro/tsconfigs/strict"}))
+
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "build", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tsconfig.json", result.stdout)
+            self.assertIn("admin/**", result.stdout)
+
+    def test_validator_rejects_unsafe_gitignore_for_pipeline_push(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_tina_project(project)
+            (project / ".gitignore").write_text("node_modules/\n")
+
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "build", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(".gitignore", result.stdout)
+            self.assertIn("pipeline/vps-connection.json", result.stdout)
+
     def test_validator_rejects_tina_api_without_password_auth_routes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -484,6 +601,48 @@ class AstroStaticRegressionTests(unittest.TestCase):
             self.assertIn("/api/tina/login", result.stdout)
             self.assertIn("/api/tina/logout", result.stdout)
             self.assertIn("/api/tina/auth-check", result.stdout)
+
+    def test_smoke_accepts_ssr_live_http_without_static_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            dist_client = project / "dist/client"
+            dist_server = project / "dist/server"
+            dist_client.mkdir(parents=True)
+            dist_server.mkdir(parents=True)
+            (dist_server / "entry.mjs").write_text("export default {};\n")
+            (dist_client / "assets").mkdir()
+            (dist_client / "assets/style.css").write_text(":root{--color-primary: red; --font-body: sans-serif}")
+            live_root = project / "live"
+            live_root.mkdir()
+            (live_root / "index.html").write_text(
+                '<html><head><title>SSR Demo</title><link href="/assets/style.css" rel="stylesheet"></head>'
+                '<body><main>SSR Demo</main></body></html>'
+            )
+            sock = socket.socket()
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            sock.close()
+            server = subprocess.Popen(
+                ["python3", "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+                cwd=live_root,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                result = subprocess.run(
+                    ["bash", str(ROOT / "phases" / "smoke.sh")],
+                    cwd=project,
+                    env={**os.environ, "SITE_URL": f"http://127.0.0.1:{port}", "SITE_DIR": str(project)},
+                    text=True,
+                    capture_output=True,
+                    timeout=20,
+                )
+            finally:
+                server.terminate()
+                server.wait(timeout=5)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("STATUS:SMOKE_OK", result.stdout)
 
     def test_validator_requires_tina_click_to_edit_markers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -738,6 +897,33 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertNotIn(':/tmp/pipeline-result.json" pipeline/bootstrap-result.json', join)
         self.assertIn('sudo cat /var/lib/site-pipeline/pipeline-result.json', join)
         self.assertIn('chmod 600 pipeline/bootstrap-result.json', join)
+
+    def test_ppq_auth_helper_and_agents_use_opencode_credentials(self) -> None:
+        helper = ROOT / "phases" / "ppq-auth.sh"
+        self.assertTrue(helper.is_file())
+        helper_text = helper.read_text()
+        self.assertIn('/Users/djesys/.local/share/opencode/auth.json', helper_text)
+        self.assertIn('/Users/djesys/.config/opencode/opencode.json', helper_text)
+        self.assertIn('STATUS:MISSING_PPQ_API_KEY', helper_text)
+        for agent in ["img-gen.md", "vid-gen.md", "asset-generator.md"]:
+            text = (AGENTS / agent).read_text()
+            self.assertIn('ppq-auth.sh', text)
+            self.assertIn('PPQ_API_KEY_SOURCE', text)
+
+    def test_push_gitea_excludes_generated_and_secret_paths(self) -> None:
+        text = (ROOT / "phases" / "push-gitea.sh").read_text()
+        for expected in [
+            'node_modules/',
+            'dist/',
+            '.astro/',
+            '.opencode/',
+            '.env',
+            'pipeline/vps-connection.json',
+            'git rm --cached --ignore-unmatch',
+            "':!node_modules/'",
+            "':!dist/'",
+        ]:
+            self.assertIn(expected, text)
 
     def test_setup_vps_skips_root_ssh_lockout_hardening_without_deploy_user(self) -> None:
         text = (ROOT / "setup-vps.sh").read_text()

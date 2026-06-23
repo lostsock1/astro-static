@@ -96,7 +96,13 @@ Poll:    GET  https://api.ppq.ai/v1/videos/:id
 
 Authorization: `Bearer $PPQ_API_KEY` (same key as image generation).
 
-The API key is in the `PPQ_API_KEY` environment variable. If it's missing, fail immediately by emitting `STATUS:MISSING_PPQ_API_KEY` and exiting non-zero. (This token is in the orchestrator's grammar; the caller will surface it.)
+Resolve the API key through the shared astro-static helper before every generation attempt:
+```bash
+source ~/.config/opencode/astro-static/phases/ppq-auth.sh
+ppq_require_api_key || exit 1
+echo "PPQ credential source: ${PPQ_API_KEY_SOURCE}" >&2
+```
+The helper first honors `PPQ_API_KEY`, then reads OpenCode's PPQ credentials from `/Users/djesys/.local/share/opencode/auth.json` and `/Users/djesys/.config/opencode/opencode.json`. If no key is found, it emits `STATUS:MISSING_PPQ_API_KEY` and returns non-zero. Never print the key value.
 
 ## API Call Pattern
 
@@ -105,6 +111,8 @@ The API key is in the `PPQ_API_KEY` environment variable. If it's missing, fail 
 ```bash
 TMP_SUBMIT=$(mktemp /tmp/ppq-video.XXXXXX.json)
 trap 'rm -f "$TMP_SUBMIT"' EXIT
+source ~/.config/opencode/astro-static/phases/ppq-auth.sh
+ppq_require_api_key || exit 1
 
 curl --fail --show-error --connect-timeout 15 --max-time 120 -s -X POST https://api.ppq.ai/v1/videos \
   -H "Authorization: Bearer $PPQ_API_KEY" \
@@ -261,3 +269,4 @@ ERROR_MESSAGE: <empty on success>
 6. Default to 5s duration for cost efficiency; 10s only when explicitly requested
 7. Always include `negative_prompt` to avoid text, watermarks, and quality issues
 8. Check `known_issues` in the model library cache before using any model — never use a model flagged as UNUSABLE or with i2v_unavailable for i2v
+9. Always use `ppq-auth.sh` and report only `PPQ_API_KEY_SOURCE`, never the secret itself

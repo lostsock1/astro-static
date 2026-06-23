@@ -72,7 +72,7 @@ The pipeline is **phase-gated with human-in-the-loop checkpoints**, **contract-v
 - **Control node / VPS separation**: All AI work (research, asset generation, code writing, Tina admin SPA build) happens locally on the control node. Only non-secret build/runtime artifacts are synced to the VPS via rsync over SSH.
 - **Non-blocking bootstrap**: VPS setup runs in the background concurrently with Phases 1–4.2, joining only before Phase 4.3 (Build Deploy). This parallelizes ~3–5 minutes of server setup with pure-local work.
 - **Phase gate with human-in-the-loop**: Phase 2.5 (Brief Validation) explicitly checks for unverifiable proper nouns, contradictory requirements, and ambiguous references. The pipeline halts until a human resolves flagged issues — preventing wasted downstream asset generation.
-- **Contract-driven architecture**: Every phase produces and validates JSON artifacts against JSON schemas. `validate-pipeline.py` runs at startup and phase transitions with **36 regression tests** to catch drift, missing files, schema violations, insecure permissions, unsafe paths, and TinaCMS editability regressions early.
+- **Contract-driven architecture**: Every phase produces and validates JSON artifacts against JSON schemas. `validate-pipeline.py` runs at startup and phase transitions with **46 regression tests** to catch drift, missing files, schema violations, insecure permissions, unsafe paths, package/version drift, SSR deploy mistakes, and TinaCMS editability regressions early.
 - **TinaCMS self-hosted visual editing**: Every generated site includes a `/admin` visual editor backed by Gitea + SQLite. The pipeline enforces maximum editability: all text nodes must have `data-tina-field`, all `<img>` elements must be Tina-backed or marked `data-static-media`, all media paths must come from Tina/content manifests, and service bullets must live in Tina-backed content — not hardcoded arrays.
 
 ## TinaCMS Visual Editing (Self-Hosted)
@@ -90,7 +90,7 @@ Editor browser ──→ /admin/index.html (SPA)
               TinaCMS datalayer → SQLite (local) → Gitea (git backend)
 ```
 
-### Enforced Guardrails (36 regression tests)
+### Enforced Guardrails (46 regression tests)
 
 The pipeline validator rejects sites with:
 
@@ -103,9 +103,24 @@ The pipeline validator rejects sites with:
 | Hardcoded visible copy in markup | Marketing text must be Tina-backed |
 | Hardcoded service bullet arrays | Bullet lists must live in Tina-backed content |
 | Tina config without custom `PasswordAuthProvider` | Admin SPA must use password-gated self-hosted auth |
+| `PasswordAuthProvider.getUser()` returning boolean `true` | Must return `{ name, email }` or Tina crashes reading `user.name` |
+| Tina island route exported as `ALL` | Must export `POST` from `experimental_createIslandRoute` |
+| Missing Tina `tsconfig.json` excludes | `admin/**`, `dist/**`, and `node_modules/**` must not be type-checked |
+| Missing admin artifacts, tiny bridge, or `admin/.gitignore` | Local Tina admin build must be publishable and tracked |
+| SSR deploy smoke requiring `dist/client/index.html` | SSR `dist/server/entry.mjs` is valid and must be smoke-tested via live `SITE_URL` |
+| Unsafe `.gitignore` for Gitea pushes | Generated output, logs, env files, and pipeline secrets must not be committed |
+| Package version drift | Astro/Tailwind/Tina package ranges must match the tested stack |
 | Tina config without `ui.router` | Collections must map to visual editor routes |
 | Data loaders without `requestWithMetadata()` | Visual preview forms require metadata |
 | Missing `tina/config.ts`, island route, or API route | All TinaCMS files must be present |
+
+### Latest Tina/SSR hardening contract
+
+- `PasswordAuthProvider.getUser()` returns `false` for unauthenticated sessions and a user object with at least `name` and `email` for authenticated sessions. Returning boolean `.ok` is invalid.
+- `src/pages/tina-island/[name].ts` exports `POST`, not `ALL`.
+- Tina admin artifacts are built locally, committed/published from `admin/`, and protected from `admin/.gitignore` regressions.
+- SSR output is first-class: `dist/server/entry.mjs` satisfies the build-output gate, and smoke tests fetch the live `SITE_URL` while checking local `dist/client` assets.
+- PPQ image/video agents resolve credentials through `phases/ppq-auth.sh`, which checks `PPQ_API_KEY` first and then OpenCode auth/config without printing secrets.
 
 ### Canonical Image Pattern: "Tina Override with Asset-Gen Fallback"
 
@@ -284,10 +299,10 @@ astro-static/
 │       ├── 02-asset-manifest.schema.json
 │       └── ... (11 schemas total)
 ├── scripts/                           # Standalone utilities
-│   ├── validate-pipeline.py           # Multi-phase pipeline validator (36 guardrails)
+│   ├── validate-pipeline.py           # Multi-phase pipeline validator (46 guardrails)
 │   ├── setup-vps.sh                   # Idempotent Debian 13 bootstrap (13 phases)
 │   ├── bg-bootstrap.sh                # Background bootstrap launcher
-│   ├── test_regressions.py            # Regression tests (36 tests)
+│   ├── test_regressions.py            # Regression tests (46 tests)
 │   └── phases/                        # Deterministic helpers
 │       ├── bootstrap-join.sh
 │       ├── hyperframes-probe.sh
@@ -295,6 +310,7 @@ astro-static/
 │       ├── push-gitea.sh
 │       ├── smoke.sh
 │       ├── tinacms-local-build.sh
+│       ├── ppq-auth.sh
 │       ├── asset-fallbacks.sh
 │       ├── gen-lqip.py
 │       └── retry.sh
@@ -310,7 +326,7 @@ astro-static/
 
 - **OpenCode** installed and configured
 - A **Debian 13 VPS** (fresh or existing) reachable via SSH with key authentication
-- **PPQ.AI API key** set as `PPQ_API_KEY` environment variable
+- **PPQ.AI API key** available through `PPQ_API_KEY` or OpenCode's PPQ auth/config (`phases/ppq-auth.sh` resolves it without printing the value)
 - **Python 3.12+** with `jsonschema` and `Pillow` libraries
 - **jq** for JSON processing in bash scripts
 
@@ -431,7 +447,7 @@ All engines are **dependency-gated**, **reduced-motion guarded**, and **mobile-s
 - **≥44px touch targets** — mobile accessibility
 - **prefers-reduced-motion** — every animation has a fallback
 - **Semantic HTML** — `<header>`, `<main>`, `<nav>`, `<section>`, `<article>`
-- **TinaCMS editability** — every visible text, `<img>`, media path, and background image is admin-editable. The pipeline validator enforces this with 36 regression tests.
+- **TinaCMS editability** — every visible text, `<img>`, media path, and background image is admin-editable. The pipeline validator enforces this with 46 regression tests.
 
 ## Security
 
@@ -439,7 +455,7 @@ All engines are **dependency-gated**, **reduced-motion guarded**, and **mobile-s
 - **Installation summary**: `pipeline/installation-summary.md` intentionally contains URLs and credentials plus warnings/errors/inefficiencies; keep it owner-only (`0600`) and never paste it into public logs or tickets.
 - **SSH**: Key-based auth only. Gitea passwords are auto-generated per-project.
 - **Permissions**: All agents use least-privilege. Auditor is read-only.
-- **API keys**: `PPQ_API_KEY` from environment only, never in artifacts.
+- **API keys**: PPQ credentials come from `PPQ_API_KEY` or OpenCode auth/config via `ppq-auth.sh`; never print them and never write them into artifacts.
 - **No external services**: Gitea + Caddy + TinaCMS (self-hosted) on VPS.
 - **TinaCMS auth**: custom `PasswordAuthProvider` plus backend session cookie gate — never TinaCloud or `LocalAuthProvider` fallback. Tina/admin secrets are generated server-side and never printed.
 - **Git safety**: Force-push disabled. `pull --rebase` before push.

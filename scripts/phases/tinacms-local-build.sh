@@ -30,6 +30,16 @@ fail() { echo "STATUS:TINACMS_BUILD_FAILED reason=$*"; exit 1; }
 # --- preflight ---
 [ -f "$PROJECT_DIR/tina/config.ts" ] || fail "no_tina_config"
 
+if grep -q 'return (await fetch("/api/tina/auth-check")).ok' "$PROJECT_DIR/tina/config.ts" \
+  || ! grep -q 'name:' "$PROJECT_DIR/tina/config.ts"; then
+  fail "auth_user_shape_missing"
+fi
+
+ISLAND_ROUTE="$PROJECT_DIR/src/pages/tina-island/[name].ts"
+[ -f "$ISLAND_ROUTE" ] || fail "no_tina_island_route"
+grep -q 'export const POST' "$ISLAND_ROUTE" || fail "island_route_must_export_post"
+! grep -q 'export const ALL' "$ISLAND_ROUTE" || fail "island_route_must_export_post"
+
 # --- step 1: ensure dependencies are installed ---
 log "Installing dependencies (if needed)..."
 if [ ! -d "$PROJECT_DIR/node_modules" ]; then
@@ -56,6 +66,7 @@ log "Verifying admin SPA output..."
 # to git or handed to build-deployer because the VPS cannot build it (OOM). Remove the generated .gitignore
 # so git tracks the actual admin files.
 rm -f "$PROJECT_DIR/admin/.gitignore"
+[ ! -f "$PROJECT_DIR/admin/.gitignore" ] || fail "admin_gitignore_still_present"
 
 # Copy the TinaCMS bridge.js from node_modules to the admin/ directory.
 # The @tinacms/astro integration normally copies this during 'astro build' to
@@ -71,6 +82,9 @@ if [ -f "$BRIDGE_SRC" ]; then
 else
   fail "no_tina_bridge"
 fi
+
+BRIDGE_SIZE=$(wc -c < "$PROJECT_DIR/admin/bridge.js" | tr -d '[:space:]')
+[ "$BRIDGE_SIZE" -gt 1000 ] || fail "tina_bridge_too_small size_bytes=$BRIDGE_SIZE"
 
 [ -f "$PROJECT_DIR/admin/index.html" ] || fail "no_admin_index_html"
 [ -d "$PROJECT_DIR/admin/assets" ] || fail "no_admin_assets_dir"

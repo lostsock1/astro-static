@@ -465,7 +465,7 @@ Generated astro-static sites use TinaCMS as the CMS path:
 - Keep `output: "static"` for public pages.
 - Use `@astrojs/node` standalone adapter for on-demand editor routes.
 - `tina/config.ts` mirrors `src/content.config.ts` collection names and fields.
-- `tina/config.ts` must use a custom `PasswordAuthProvider` (extending `AbstractAuthProvider` from `tinacms`) — NOT `LocalAuthProvider`. `LocalAuthProvider` only sets a localStorage flag and does not interact with the backend session. The custom provider's `authenticate()` redirects to `/admin/login.html`, `getUser()` probes `/api/tina/auth-check` (GET → 200/401), `getToken()` returns `{ id_token: "" }`, and `logout()` calls `/api/tina/logout` then redirects to login. This ensures the admin SPA redirects unauthenticated users to the login page.
+- `tina/config.ts` must use a custom `PasswordAuthProvider` (extending `AbstractAuthProvider` from `tinacms`) — NOT `LocalAuthProvider`. `LocalAuthProvider` only sets a localStorage flag and does not interact with the backend session. The custom provider's `authenticate()` redirects to `/admin/login.html`, `getUser()` probes `/api/tina/auth-check` (GET → 200/401) and returns `false` when unauthorized or a user object with `name`/`email` when authorized, `getToken()` returns `{ id_token: "" }`, and `logout()` calls `/api/tina/logout` then redirects to login. Never return boolean `true` from `getUser()` — Tina reads `user.name` and crashes with `Cannot read properties of undefined (reading 'name')`.
 - Every page/section collection must define `ui.router` so document clicks open the live visual editor route, not just the form editor.
 - Every Tina data loader must wrap generated client queries in `requestWithMetadata()`.
 - Every visible editable DOM node must carry `data-tina-field={tinaField(source, 'fieldName')}`. This is what enables click-to-edit outlines/focus in the preview.
@@ -476,6 +476,8 @@ Generated astro-static sites use TinaCMS as the CMS path:
 - `tinacms build` generates `admin/index.html` and `tina/__generated__/`; do not hand-author generated admin files. **The admin SPA is built locally on the control node (Phase 4.2), NOT on the VPS** — the 2GB VM OOM-kills esbuild. The `admin/` directory is published by build-deployer and served by Caddy from `${SITE_DIR}/admin/`.
 - `tina/config.ts` build config MUST be `{ outputFolder: "admin", publicFolder: "." }` so the admin SPA lands at project root, not inside `dist/client/` (which `astro build` wipes).
 - TinaCMS collection `path` values MUST match Astro Content Collection `base` paths exactly (e.g., both `src/content/pages`, not singular/plural mismatched).
+- TinaCMS projects produce SSR output through `@astrojs/node` even when public pages are mostly static. `dist/server/entry.mjs` is valid build output; deployment and smoke tests must not require `dist/client/index.html` when SSR is present.
+- Smoke testing SSR must fetch the live `SITE_URL` while using local `dist/client` for CSS/media existence checks. The canonical contract is `SITE_URL="$SITE_URL" SITE_DIR="$SITE_DIR" bash smoke.sh` from the site root.
 
 Latest compatible baseline as of 2026-06-19: `astro@^6.4.8`, `@astrojs/node@^10.1.4`, `@astrojs/mdx@^6.0.3`, `@astrojs/react@^5.0.7`, `@astrojs/sitemap@^3.7.3`, `@tinacms/astro@^0.5.0`, `tinacms@^3.9.3`, `@tinacms/cli@^2.5.1`, `@tinacms/datalayer@^2.0.25`, `memory-level@^1.0.0`, `tailwindcss@^4.3.1`, `@tailwindcss/vite@^4.3.1`.
 
@@ -520,7 +522,7 @@ import { AbstractAuthProvider, defineConfig } from 'tinacms';
 /**
  * Custom auth provider for self-hosted TinaCMS with password backend.
  * - authenticate(): redirects to /admin/login.html
- * - getUser(): probes /api/tina/auth-check for session cookie validity
+ * - getUser(): probes /api/tina/auth-check and returns false or a user object with name/email
  * - getToken(): returns empty token (real auth is HttpOnly cookie, same-origin)
  * - logout(): calls /api/tina/logout, redirects to login
  */
@@ -534,7 +536,8 @@ class PasswordAuthProvider extends AbstractAuthProvider {
   async getUser() {
     try {
       const res = await fetch('/api/tina/auth-check', { method: 'GET' });
-      return res.ok;
+      if (!res.ok) return false;
+      return { name: 'Site Admin', email: 'admin@localhost' };
     } catch { return false; }
   }
   async getToken() { return { id_token: '' }; }
@@ -744,7 +747,11 @@ class PasswordAuthProvider extends AbstractAuthProvider {
     return { access_token: 'LOCAL', id_token: 'LOCAL', refresh_token: 'LOCAL' };
   }
   async getUser() {
-    try { return (await fetch('/api/tina/auth-check')).ok; } catch { return false; }
+    try {
+      const res = await fetch('/api/tina/auth-check');
+      if (!res.ok) return false;
+      return { name: 'Site Admin', email: 'admin@localhost' };
+    } catch { return false; }
   }
   async getToken() { return { id_token: '' }; }
   async logout() {

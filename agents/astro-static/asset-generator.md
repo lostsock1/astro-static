@@ -59,6 +59,8 @@ If the orchestrator invokes you with `pipeline/02-image-shot-list.json`, do not 
 
 In this mode, all direct PPQ/API calls still belong to `@astro-static/img-gen`. The orchestrator must never call img-gen directly.
 
+PPQ credential resolution belongs to the shared helper `~/.config/opencode/astro-static/phases/ppq-auth.sh`. Do not treat a missing shell `PPQ_API_KEY` as final until the helper has also checked OpenCode auth/config. Report only `PPQ_API_KEY_SOURCE`, never the key value.
+
 #### Content-image import index
 
 After Phase 3.5, write `src/lib/content-images.ts`. Each entry pairs the full image (resolved by Vite) with its LQIP (loaded as raw text):
@@ -134,10 +136,9 @@ If either fails, exit with non-zero status. The orchestrator will see the failur
 
 If you need to generate a logo or OG image, verify the local image toolchain before continuing:
 ```bash
-if [ -z "${PPQ_API_KEY:-}" ]; then
-  echo "STATUS:MISSING_PPQ_API_KEY" >&2
-  exit 1
-fi
+source ~/.config/opencode/astro-static/phases/ppq-auth.sh
+ppq_require_api_key || exit 1
+echo "PPQ credential source: ${PPQ_API_KEY_SOURCE}" >&2
 python3 - <<'PY2'
 import importlib.util, sys
 missing = []
