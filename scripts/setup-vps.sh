@@ -50,30 +50,24 @@ wait_for_apt_lock() {
   if command -v fuser >/dev/null 2>&1; then
     while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; do
       if [ "$waited" -ge "$max_wait" ]; then
-        echo "[!!] Apt lock still held after ${max_wait}s — forcing cleanup"
-        fuser -k /var/lib/dpkg/lock-frontend 2>/dev/null || true
-        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
-        dpkg --configure -a 2>/dev/null || true
-        break
+        echo "[ERR] Apt lock still held after ${max_wait}s — refusing to kill package-manager processes"
+        return 1
       fi
       sleep 5
       waited=$((waited + 5))
       echo "[--] Waiting for apt lock... (${waited}s)"
     done
   else
-    # Fallback: check if lock files exist and wait for them to disappear
+    # Fallback: without fuser, wait for active apt/dpkg processes. Lock files can
+    # remain on disk after clean exits, so file existence alone is not a blocker.
     while [ -f /var/lib/dpkg/lock-frontend ] || [ -f /var/lib/dpkg/lock ]; do
       if [ "$waited" -ge "$max_wait" ]; then
-        echo "[!!] Apt lock still held after ${max_wait}s — forcing cleanup"
-        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
-        dpkg --configure -a 2>/dev/null || true
-        break
+        echo "[ERR] Apt lock still appears busy after ${max_wait}s — refusing forced cleanup"
+        return 1
       fi
       # Check if any apt/dpkg process is actually running — lock files may be stale
       if ! pgrep -x apt-get >/dev/null 2>&1 && ! pgrep -x dpkg >/dev/null 2>&1; then
-        echo "[--] Lock files exist but no apt/dpkg process running — removing stale locks"
-        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
-        dpkg --configure -a 2>/dev/null || true
+        echo "[--] Lock files exist but no apt/dpkg process is running — continuing without deleting locks"
         break
       fi
       sleep 5
@@ -97,6 +91,7 @@ SITE_SUBDOMAIN="${SITE_SUBDOMAIN:-}"
 PROJECT_HOST="${PROJECT_HOST:-}"
 PROJECT_PORT="${PROJECT_PORT:-}"
 ASTRO_SSR_PORT="${ASTRO_SSR_PORT:-}"
+SSH_PORT="${SSH_PORT:-22}"
 GITEA_ADMIN_USER="${GITEA_ADMIN_USER:-siteadmin}"
 # Strip =+/ and newlines from base64: those characters break the password when
 # it's embedded in URL contexts (git remote http://user:pass@host/...) or
@@ -508,6 +503,7 @@ if $SYSTEM_NEEDED; then
     ufw default deny incoming
     ufw default allow outgoing
     ufw allow ssh
+    ufw allow "${SSH_PORT}/tcp"
     ufw allow 80/tcp
     ufw allow 443/tcp
     if [[ "$USE_TLS" != "true" ]]; then ufw allow 3000/tcp; fi
@@ -515,6 +511,7 @@ if $SYSTEM_NEEDED; then
   else
     skip "ufw already active — verifying required ports"
     ufw allow ssh      >/dev/null
+    ufw allow "${SSH_PORT}/tcp" >/dev/null
     ufw allow 80/tcp   >/dev/null
     ufw allow 443/tcp  >/dev/null
     if [[ "$USE_TLS" != "true" ]]; then ufw allow 3000/tcp >/dev/null; fi
@@ -1378,10 +1375,10 @@ if ! $PROJECT_ALREADY_SCAFFOLDED; then
     "tinacms:build": "tinacms build --local --skip-cloud-checks"
   },
   "dependencies": {
-    "astro": "^6.4.8",
-    "@astrojs/react": "^5.0.7",
-    "@astrojs/mdx": "^6.0.3",
-    "@astrojs/node": "^10.1.4",
+    "astro": "^7.0.2",
+    "@astrojs/react": "^6.0.0",
+    "@astrojs/mdx": "^7.0.0",
+    "@astrojs/node": "^11.0.0",
     "@astrojs/sitemap": "^3.7.3",
     "@astrojs/check": "^0.9.9",
     "@tinacms/astro": "^0.5.0",
@@ -1522,11 +1519,12 @@ PAGE
 
   mkdir -p src/content/pages src/content/settings
   cat > src/content.config.ts << 'TS'
-import { defineCollection, z } from "astro:content";
+import { defineCollection } from "astro:content";
+import { z } from "astro/zod";
 import { glob } from "astro/loaders";
 
 const pages = defineCollection({
-  loader: glob({ pattern: "**/*.{md,mdx}", base: "./src/content/pages" }),
+  loader: glob({ pattern: "**/*.md", base: "./src/content/pages" }),
   schema: z.object({
     title: z.string(),
     description: z.string().optional(),
@@ -1619,12 +1617,21 @@ export default defineConfig({
     outputFolder: "admin",
     publicFolder: ".",
   },
+  media: {
+    tina: {
+      publicFolder: "public",
+      mediaRoot: "images",
+      static: false,
+    },
+    accept: ["image/*"],
+  },
   schema: {
     collections: [
       {
         name: "page",
         label: "Pages",
         path: "src/content/pages",
+        format: "md",
         ui: { router: ({ document }) => `/${document._sys.filename === "index" ? "" : document._sys.filename}` },
         fields: [
           { name: "title", type: "string", required: true },
@@ -1668,12 +1675,51 @@ export default defineConfig({
 });
 TINACONF
 
+  mkdir -p src/components/islands
+  cat > src/components/islands/PageIslandMarker.astro << 'TINAMARKER'
+---
+// Hidden bootstrap target for Tina visual editing. Frontend-builder replaces or
+// extends this with content-specific islands; do not leave the registry empty.
+const { data } = Astro.props;
+---
+<span hidden data-static-copy>{data?.data?.page?._sys?.relativePath ?? 'page'}</span>
+TINAMARKER
+
+  cat > src/lib/tina/islands.ts << 'TINAISLANDS'
+import type { IslandRegistry } from "@tinacms/astro/experimental";
+import PageIslandMarker from "../../components/islands/PageIslandMarker.astro";
+import { requestWithMetadata } from "./data";
+
+const PAGE_QUERY = `query page($relativePath: String!) {
+  page(relativePath: $relativePath) {
+    ... on Document { _sys { relativePath filename } id }
+    title
+    description
+  }
+}`;
+
+export const pageIslandWrapper = {
+  tag: "div",
+  className: "tina-page-island-marker",
+};
+
+export const islands: IslandRegistry = {
+  page: {
+    fetch: (_request, params) => requestWithMetadata(
+      { data: { page: {} }, query: PAGE_QUERY, variables: { relativePath: params.get("relativePath") ?? "welcome.md" } },
+      { priority: "primary" }
+    ),
+    component: PageIslandMarker,
+    wrapper: pageIslandWrapper,
+    propsFromData: (data) => ({ data }),
+  },
+};
+TINAISLANDS
+
   cat > 'src/pages/tina-island/[name].ts' << 'TINAISLAND'
 import type { APIRoute } from "astro";
 import { experimental_createIslandRoute } from "@tinacms/astro/experimental";
-
-// Placeholder islands registry — the frontend-builder populates this
-const islands = {} as Record<string, { component: any; wrapper: string }>;
+import { islands } from "../../lib/tina/islands";
 
 export const prerender = false;
 export const POST: APIRoute = experimental_createIslandRoute(islands);
@@ -2027,9 +2073,14 @@ dist/
 pipeline/
 pipeline/vps-connection.json
 pipeline/.git-credentials
+pipeline/bootstrap-result.json
+pipeline/bootstrap*.json
 pipeline/bootstrap*.log
 pipeline/bootstrap*.pid
 pipeline/bootstrap*.exit
+pipeline/installation-summary.md
+pipeline/installation.log
+pipeline/setup-wrapper.*
 pipeline/RESULT.md
 pipeline/HUMAN_REVIEW.md
 .opencode/
@@ -2056,12 +2107,12 @@ GI
   # We never commit bun.lockb to the scaffold repo (it's a per-deploy thing
   # the auto-rebuild watcher recreates if needed).
   bun install --silent 2>&1 | tail -3 || warn "bun install failed — Phase 4 will retry"
-  
+
   # Fix ownership immediately after scaffold (prevents rsync Permission denied)
   if id -u debian >/dev/null 2>&1; then
     chown -R debian:debian "${SITE_DIR}"
   fi
-  
+
   log "Project scaffold ready for ${PROJECT_NAME}"
 fi
 

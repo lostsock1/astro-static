@@ -1,7 +1,7 @@
 # astro-static agent stack
 
 This directory contains the OpenCode agent team for the `astro-static` pipeline:
-a local-control-node workflow that generates, deploys, and validates Astro 6 / Tailwind v4 / TinaCMS sites on Debian VPS targets.
+a local-control-node workflow that generates, deploys, and validates Astro 7 / Tailwind v4 / TinaCMS sites on Debian VPS targets.
 
 ## Scope
 
@@ -10,6 +10,7 @@ a local-control-node workflow that generates, deploys, and validates Astro 6 / T
 - VPS bootstrap and join handoff
 - brand/design research and reference extraction
 - identity assets, content images, PPQ videos, and optional HyperFrames hero video
+- deterministic Tina blueprint generation before assets/codegen
 - local Astro/Tailwind/Tina source generation
 - local TinaCMS admin SPA build
 - remote sync, remote `site-build`, SSR restart, smoke tests, and final validation
@@ -20,7 +21,7 @@ Runtime shell helpers and validators live outside this agents repo at:
 /Users/djesys/.config/opencode/astro-static/
 ```
 
-Those helpers are part of the global astro-static stack even though this repository tracks the agent prompts, references, and schemas.
+Those helpers are part of the global astro-static stack. This repository keeps a versioned copy under `scripts/`; sync it to the global runtime path when installing or updating the local OpenCode stack.
 
 ## Agent roles
 
@@ -40,9 +41,10 @@ Those helpers are part of the global astro-static stack even though this reposit
 
 ## Canonical references
 
-- `references/reference-stack.md` — Astro 6, Tailwind v4, TinaCMS, SSR, visual editing, image/video, and design-system contract.
+- `references/reference-stack.md` — Astro 7, Tailwind v4, TinaCMS, SSR, visual editing, image/video, and design-system contract.
 - `references/pipeline-contract.md` — phase IDs, status values, retry/invalidation rules, `STATUS:<TOKEN>` grammar, and secret-handling contract.
 - `schemas/*.schema.json` — pipeline artifact schemas used by `validate-pipeline.py`.
+- `scripts/` — versioned runtime helper snapshot (`setup-vps.sh`, `bg-bootstrap.sh`, `validate-pipeline.py`, regression tests, and phase scripts).
 
 ## Pipeline phase graph
 
@@ -52,14 +54,15 @@ The canonical phase IDs are:
 2. `1_design_extraction`
 3. `2_research`
 4. `2_5_brief_validation`
-5. `3_asset_generation`
-6. `3_5_image_generation`
-7. `3_6_video_generation`
-8. `3_8_hyperframes_hero_optional`
-9. `4_1_frontend_codegen`
-10. `4_2_tinacms_local_build`
-11. `4_3_build_deploy`
-12. `5_publish_result`
+5. `2_6_tina_blueprint`
+6. `3_asset_generation`
+7. `3_5_image_generation`
+8. `3_6_video_generation`
+9. `3_8_hyperframes_hero_optional`
+10. `4_1_frontend_codegen`
+11. `4_2_tinacms_local_build`
+12. `4_3_build_deploy`
+13. `5_publish_result`
 
 Do not rename phases in prompts, schemas, state files, or scripts. Update `references/pipeline-contract.md`, schemas, validators, and tests together when the phase graph changes.
 
@@ -68,6 +71,7 @@ Do not rename phases in prompts, schemas, state files, or scripts. Update `refer
 The stack is hardened around failures found in live pipeline runs:
 
 - **TinaCMS auth:** `PasswordAuthProvider.getUser()` must return `false` when unauthorized or a user object with `name`/`email` when authorized. Returning boolean `true` crashes Tina with `Cannot read properties of undefined (reading 'name')`.
+- **Tina blueprint:** `pipeline/01-tina-blueprint.json` is the canonical editable-surface contract before assets and frontend codegen. `validate-pipeline.py --phase blueprint` rejects missing settings nav/footer, unrefed visible fields, incomplete media fields, unsupported blocks, and static exemptions without reasons.
 - **Tina island route:** `src/pages/tina-island/[name].ts` must export `POST` via `experimental_createIslandRoute`; `ALL` is rejected.
 - **Tina admin build:** `admin/` and `tina/__generated__/` are built locally in Phase 4.2 and must be published; `admin/.gitignore` is rejected.
 - **SSR deployment:** `dist/server/entry.mjs` is valid output for TinaCMS projects. Build/deploy/smoke must not require `dist/client/index.html` when SSR exists.
@@ -92,12 +96,13 @@ bash -n /Users/djesys/.config/opencode/astro-static/phases/smoke.sh
 bash -n /Users/djesys/.config/opencode/astro-static/phases/push-gitea.sh
 bash -n /Users/djesys/.config/opencode/astro-static/phases/tinacms-local-build.sh
 bash -n /Users/djesys/.config/opencode/astro-static/phases/ppq-auth.sh
+python3 /Users/djesys/.config/opencode/astro-static/phases/tina-blueprint.py validate --pipeline-dir pipeline/
 ```
 
 Expected regression output at this stack revision:
 
 ```text
-Ran 46 tests
+Ran 101 tests
 OK
 ```
 

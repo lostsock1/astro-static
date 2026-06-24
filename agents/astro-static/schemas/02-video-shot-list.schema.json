@@ -33,7 +33,10 @@
         "id",
         "type",
         "prompt",
-        "output_path"
+        "output_path",
+        "field_ref",
+        "content_path",
+        "tina_default_value"
       ],
       "properties": {
         "id": {
@@ -55,7 +58,20 @@
         },
         "output_path": {
           "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))public/videos/.+\\.(mp4|mov|m4v|webm)$"
+        },
+        "field_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.\\[\\]-]+$"
+        },
+        "content_path": {
+          "type": "string",
           "minLength": 1
+        },
+        "tina_default_value": {
+          "type": ["string", "null"]
         },
         "poster_path": {
           "type": ["string", "null"]
@@ -69,6 +85,18 @@
           "enum": ["5", "10"]
         },
         "image_url": {
+          "type": ["string", "null"]
+        },
+        "source_image_path": {
+          "type": ["string", "null"]
+        },
+        "source_image_public_path": {
+          "type": ["string", "null"]
+        },
+        "source": {
+          "type": ["string", "null"]
+        },
+        "source_path": {
           "type": ["string", "null"]
         },
         "used_in": {

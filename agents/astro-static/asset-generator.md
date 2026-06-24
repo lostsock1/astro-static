@@ -28,6 +28,7 @@ You produce all visual identity assets for a site. You also own content-image ge
 
 ## Inputs
 - `pipeline/01-creative-brief.json`
+- `pipeline/01-tina-blueprint.json` (canonical editable media-field contract)
 - `pipeline/00-brief.json` (for existing brand info)
 - `pipeline/00-design-tokens/tokens.json` (optional — extracted from reference sites)
 - `pipeline/00-design-tokens/patterns/motion.yaml` (optional — extracted reference-site motion signals)
@@ -41,12 +42,15 @@ If design tokens are available, use them as **ground truth for color and typogra
 
 If the orchestrator invokes you with `pipeline/02-image-shot-list.json`, do not regenerate the identity assets. Instead:
 
-1. Read `pipeline/02-image-shot-list.json` and `pipeline/01-creative-brief.json`.
-2. For each `images[]` entry, delegate to `@astro-static/img-gen` with its `type`, `prompt`, `output_path`, and `dimensions`/`size`.
-3. Generate sequentially because the image API is rate-limited.
-4. If one image fails after the img-gen retry, mark that entry with `"status": "failed"` and continue; otherwise mark `"status": "generated"`.
-5. Ensure every successful image path exists and is larger than 5 KB.
-6. **Generate an LQIP** (Low-Quality Image Placeholder) sibling file for every non-failed image:
+1. Read `pipeline/02-image-shot-list.json`, `pipeline/01-tina-blueprint.json`, and `pipeline/01-creative-brief.json`.
+   - The shot list MUST be derived from the blueprint `media_fields` array, not from prose-only section guesses.
+   - Every shot MUST preserve `field_ref`, `content_path`, and `tina_default_value` so frontend-builder can seed Tina fields and render manifest fallbacks without losing editability.
+2. **Prefer scraped Instagram assets before PPQ generation:** if `pipeline/00-brief.json` has `instagram_use: "both"` or another explicit content/media value and `pipeline/00-instagram/assets/` contains usable JPG/PNG/WebP files, select the best matching scraped photo for each shot before calling `@astro-static/img-gen`. Copy selected photos to the requested `output_path` (changing the extension to the source image extension if needed), mark the shot `"status": "scraped_instagram"`, set `"source": "instagram_scrape"`, and set `"source_path": "pipeline/00-instagram/assets/<file>"`. Also copy a Tina-editable public version to `public/images/instagram/<id>.<ext>` when page/content fields need `/images/...` paths.
+3. For each remaining `images[]` entry without a scraped Instagram source, delegate to `@astro-static/img-gen` with its `type`, `prompt`, `output_path`, and `dimensions`/`size`.
+4. Generate sequentially because the image API is rate-limited.
+5. If one image fails after the img-gen retry, mark that entry with `"status": "failed"` and continue; otherwise mark `"status": "generated"`.
+6. Ensure every successful or scraped image path exists and is larger than 5 KB.
+7. **Generate an LQIP** (Low-Quality Image Placeholder) sibling file for every non-failed image:
    ```bash
    for path in $(jq -r '.images[] | select(.status != "failed") | .output_path' pipeline/02-image-shot-list.json); do
      python3 ~/.config/opencode/astro-static/phases/gen-lqip.py "$path" >/dev/null \
@@ -54,8 +58,8 @@ If the orchestrator invokes you with `pipeline/02-image-shot-list.json`, do not 
    done
    ```
    This writes `<image-stem>.lqip.txt` next to each image, containing a base64 WebP data URI of a 24px blurred preview (~300-500 bytes). Frontend-builder uses these as CSS background-images so visitors see a blurred preview during the brief image-decode window — a measurable LCP improvement.
-7. Rewrite `pipeline/02-image-shot-list.json` with the updated statuses before returning, then return the updated shot-list entries to the orchestrator so it can merge them into `pipeline/02-asset-manifest.json`.
-8. **Emit a typed import index** at `src/lib/content-images.ts` so frontend-builder doesn't have to guess paths from IDs. See "Content-image import index" below.
+8. Rewrite `pipeline/02-image-shot-list.json` with the updated statuses before returning, preserving each entry's `field_ref`, `content_path`, and `tina_default_value`; then return the updated shot-list entries to the orchestrator so it can merge them into `pipeline/02-asset-manifest.json`.
+9. **Emit a typed import index** at `src/lib/content-images.ts` so frontend-builder doesn't have to guess paths from IDs. See "Content-image import index" below.
 
 In this mode, all direct PPQ/API calls still belong to `@astro-static/img-gen`. The orchestrator must never call img-gen directly.
 
@@ -85,7 +89,7 @@ export type ContentImageId = keyof typeof contentImages;
 export type ContentImage = (typeof contentImages)[ContentImageId];
 ```
 
-For each `images[]` entry with `status === "generated"` or `status === "placeholder"`, emit two `import` lines (image + LQIP) and one map entry. Skip entries with `status === "failed"`. Use the shot-list `id` verbatim as the map key.
+For each `images[]` entry with `status === "generated"` or `status === "placeholder"`, emit two `import` lines (image + LQIP) and one map entry. Skip entries with `status === "failed"`. Use the shot-list `id` verbatim as the map key, and keep the manifest entry tied to its Tina `field_ref`, `content_path`, and `tina_default_value`.
 
 The `?raw` suffix is a Vite virtual import that loads the file as a string — it's the standard way to inline small text assets into the bundle.
 
@@ -95,12 +99,14 @@ This file is the contract frontend-builder consumes — it is the canonical sour
 
 If the orchestrator invokes you with `pipeline/02-video-shot-list.json`, do not regenerate identity assets or content images. Instead:
 
-1. Read `pipeline/02-video-shot-list.json` and `pipeline/01-creative-brief.json`.
-2. For each `videos[]` entry, delegate to `@astro-static/vid-gen` with its `type`, `prompt`, `output_path`, `aspect_ratio`, `duration`, and optional `image_url`.
-3. Generate sequentially — video generation is async and expensive; each video takes ~1-5 minutes.
-4. If one video fails after the vid-gen retry, mark that entry with `"status": "failed"` and continue; otherwise mark `"status": "generated"`.
-5. Ensure every successful video path exists and is larger than 100 KB.
-6. Rewrite `pipeline/02-video-shot-list.json` with the updated statuses before returning, then return the updated shot-list entries to the orchestrator so it can merge them into `pipeline/02-asset-manifest.json`.
+1. Read `pipeline/02-video-shot-list.json`, `pipeline/01-tina-blueprint.json`, `pipeline/01-creative-brief.json`, `pipeline/00-brief.json`, and `pipeline/02-asset-manifest.json`.
+   - Video requests that back editable content MUST also carry `field_ref`, `content_path`, and `tina_default_value` from blueprint `media_fields`.
+2. **Instagram content → image-to-video:** if the brief has `instagram_use: "both"`, `"content"`, `"content_images"`, `"media"`, or `"photos"`, every requested background video should animate a selected scraped Instagram still. Require `image_url` on each non-failed `videos[]` entry, preserve `source_image_path`, `source_image_public_path`, `source`, and `source_path` when provided, and pass the `image_url` through unchanged to `@astro-static/vid-gen` so it uses i2v mode. If a requested Instagram video lacks `image_url`, mark it failed with `fallback_reason: "missing_instagram_i2v_source"` rather than generating unrelated t2v footage.
+3. For each remaining `videos[]` entry, delegate to `@astro-static/vid-gen` with its `type`, `prompt`, `output_path`, `aspect_ratio`, `duration`, and optional `image_url`.
+4. Generate sequentially — video generation is async and expensive; each video takes ~1-5 minutes.
+5. If one video fails after the vid-gen retry, mark that entry with `"status": "failed"` and continue; otherwise mark `"status": "generated"`.
+6. Ensure every successful video path exists and is larger than 100 KB.
+7. Rewrite `pipeline/02-video-shot-list.json` with the updated statuses before returning, preserving `field_ref`, `content_path`, and `tina_default_value`; then return the updated shot-list entries to the orchestrator so it can merge them into `pipeline/02-asset-manifest.json`.
 
 In this mode, all direct PPQ API calls belong to `@astro-static/vid-gen`. The orchestrator must never call vid-gen directly.
 

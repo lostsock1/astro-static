@@ -17,17 +17,39 @@ set -eu
 
 # Portable timeout: macOS doesn't ship `timeout` (it's `gtimeout` from coreutils).
 # Define a function that delegates to whatever is available, or falls back to
-# a perl-based wrapper. This prevents silent command-not-found failures on macOS.
+# a bash watchdog that normalizes timeout exits to 124. This prevents silent
+# command-not-found failures on macOS and preserves pipeline status contracts.
 if command -v timeout >/dev/null 2>&1; then
   _timeout() { timeout "$@"; }
 elif command -v gtimeout >/dev/null 2>&1; then
   _timeout() { gtimeout "$@"; }
 else
-  # perl-based fallback: perl is present on every macOS and Debian system.
+  # Bash fallback: return 124 on timeout to match GNU timeout/gtimeout.
   # Usage: _timeout <seconds> <command> [args...]
   _timeout() {
     local secs="$1"; shift
-    perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+    local marker="${TMPDIR:-/tmp}/astro-static-timeout.$$.$RANDOM"
+    rm -f "$marker" 2>/dev/null || true
+    "$@" &
+    local pid=$!
+    (
+      sleep "$secs"
+      : > "$marker"
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+    ) &
+    local watcher=$!
+    local status=0
+    wait "$pid" || status=$?
+    if [ -f "$marker" ]; then
+      rm -f "$marker" 2>/dev/null || true
+      wait "$watcher" 2>/dev/null || true
+      return 124
+    fi
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    return "$status"
   }
 fi
 
@@ -154,11 +176,17 @@ for pattern in \
   '.env.*' \
   '*.log' \
   'pipeline/vps-connection.json' \
+  'pipeline/vps-connection.json.*' \
   'pipeline/.git-credentials' \
+  'pipeline/bootstrap-result.json' \
+  'pipeline/bootstrap-result.json.*' \
   'pipeline/bootstrap*.json' \
   'pipeline/bootstrap*.log' \
   'pipeline/bootstrap*.pid' \
   'pipeline/bootstrap*.exit' \
+  'pipeline/installation-summary.md' \
+  'pipeline/installation.log' \
+  'pipeline/setup-wrapper.*' \
   'pipeline/RESULT.md' \
   'pipeline/HUMAN_REVIEW.md'; do
   grep -qxF "$pattern" .gitignore 2>/dev/null || printf '%s\n' "$pattern" >> .gitignore
@@ -170,7 +198,9 @@ done
 git rm --cached --ignore-unmatch -r \
   node_modules dist .astro .opencode \
   pipeline/vps-connection.json pipeline/bootstrap-result.json pipeline/.git-credentials \
-  pipeline/bootstrap.log pipeline/_bg-bootstrap.sh \
+  pipeline/vps-connection.json.* pipeline/bootstrap-result.json.* \
+  pipeline/bootstrap.log pipeline/installation-summary.md pipeline/installation.log \
+  pipeline/setup-wrapper.* pipeline/_bg-bootstrap.sh \
   >/dev/null 2>&1 || true
 
 _timeout 30 git fetch origin main 2>/dev/null || true
@@ -187,12 +217,17 @@ git add -A -- . \
   ':!.env.*' \
   ':!*.log' \
   ':!pipeline/vps-connection.json' \
+  ':!pipeline/vps-connection.json.*' \
   ':!pipeline/bootstrap-result.json' \
+  ':!pipeline/bootstrap-result.json.*' \
   ':!pipeline/.git-credentials' \
   ':!pipeline/bootstrap*.json' \
   ':!pipeline/bootstrap*.log' \
   ':!pipeline/bootstrap*.pid' \
   ':!pipeline/bootstrap*.exit' \
+  ':!pipeline/installation-summary.md' \
+  ':!pipeline/installation.log' \
+  ':!pipeline/setup-wrapper.*' \
   ':!pipeline/RESULT.md' \
   ':!pipeline/HUMAN_REVIEW.md'
 if git diff --cached --quiet; then

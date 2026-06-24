@@ -16,17 +16,23 @@ from typing import Any
 #
 # Debian/Ubuntu: apt install python3-jsonschema
 # macOS/pip:     pip install jsonschema
+Draft202012Validator: Any = None
 try:
-    import jsonschema  # type: ignore
-    from jsonschema import Draft202012Validator  # type: ignore
+    from jsonschema import Draft202012Validator as _Draft202012Validator  # type: ignore
+    Draft202012Validator = _Draft202012Validator
     HAVE_JSONSCHEMA = True
 except ImportError:
     HAVE_JSONSCHEMA = False
 
 import os
 _HERE = Path(__file__).resolve().parent
-_BASE = _HERE if (_HERE / 'agents' / 'astro-static' / 'schemas').exists() else _HERE.parent
-_DEFAULT_SCHEMA_DIR = _BASE / 'agents' / 'astro-static' / 'schemas'
+_CONFIG_ROOT = _HERE if (_HERE / 'agents').exists() else _HERE.parent
+if (_HERE / 'agents' / 'astro-static' / 'schemas').exists():
+    _DEFAULT_SCHEMA_DIR = _HERE / 'agents' / 'astro-static' / 'schemas'
+elif (_HERE.parent / 'schemas').exists():
+    _DEFAULT_SCHEMA_DIR = _HERE.parent / 'schemas'
+else:
+    _DEFAULT_SCHEMA_DIR = _HERE.parent / 'agents' / 'astro-static' / 'schemas'
 SCHEMA_DIR = Path(os.environ.get('ASTRO_STATIC_SCHEMA_DIR', _DEFAULT_SCHEMA_DIR))
 
 # Per-profile artifact maps. The astro-static profile uses vps-connection.json
@@ -34,10 +40,12 @@ SCHEMA_DIR = Path(os.environ.get('ASTRO_STATIC_SCHEMA_DIR', _DEFAULT_SCHEMA_DIR)
 # preflight-result.json instead, and adds the image-shot-list contract.
 PROFILES = {
     'astro-static': {
-        'schema_dir': _BASE / 'agents' / 'astro-static' / 'schemas',
+        'schema_dir': _DEFAULT_SCHEMA_DIR,
         'artifacts': {
             '00-brief.json':            '00-brief.schema.json',
             '01-creative-brief.json':   '01-creative-brief.schema.json',
+            '01-tina-blueprint.json':   '01-tina-blueprint.schema.json',
+            '03-tina-coverage.json':    '03-tina-coverage.schema.json',
             '02-font-config.json':      '02-font-config.schema.json',
             '02-asset-manifest.json':   '02-asset-manifest.schema.json',
             '02-image-shot-list.json':  '02-image-shot-list.schema.json',
@@ -47,7 +55,7 @@ PROFILES = {
         },
     },
     'ispconfig': {
-        'schema_dir': _BASE / 'agents' / 'astro-ispconfig' / 'schemas',
+        'schema_dir': _CONFIG_ROOT / 'agents' / 'astro-ispconfig' / 'schemas',
         'artifacts': {
             '00-brief.json':            '00-brief.schema.json',
             '01-creative-brief.json':   '01-creative-brief.schema.json',
@@ -99,8 +107,15 @@ def _phases_for(profile: str) -> dict[str, dict[str, Any]]:
             'check_theme': False, 'check_layout': False, 'check_asset_paths': False,
             'strict': False, 'description': 'Creative brief produced',
         },
+        'blueprint': {
+            'required': {'01-creative-brief.json', '01-tina-blueprint.json'},
+            'optional': {'00-pipeline-state.json'},
+            'check_theme': False, 'check_layout': False, 'check_asset_paths': False,
+            'strict': True, 'description': 'Tina blueprint contract produced',
+        },
         'assets': {
             'required': {'00-brief.json', '01-creative-brief.json',
+                         '01-tina-blueprint.json',
                          '02-font-config.json', '02-asset-manifest.json'} | connection_required,
             'optional': {'00-pipeline-state.json', '02-image-shot-list.json'} | video_shot_list,
             'check_theme': True, 'check_layout': False, 'check_asset_paths': True,
@@ -108,8 +123,10 @@ def _phases_for(profile: str) -> dict[str, dict[str, Any]]:
         },
         'build': {
             'required': {'00-brief.json', '01-creative-brief.json',
-                         '02-font-config.json', '02-asset-manifest.json',
-                         '00-pipeline-state.json'} | connection_required,
+                          '01-tina-blueprint.json',
+                          '03-tina-coverage.json',
+                          '02-font-config.json', '02-asset-manifest.json',
+                          '00-pipeline-state.json'} | connection_required,
             'optional': {'02-image-shot-list.json'} | video_shot_list,
             'check_theme': True, 'check_layout': True, 'check_asset_paths': True,
             'strict': True, 'description': 'Frontend build / pre-deploy gate',
@@ -150,7 +167,27 @@ MEDIA_LITERAL_RE = re.compile(
     r'\b(?:src|poster|videoSrc|posterPath|image|bgImage)\s*=\s*["\'](?P<path>/(?:assets|images|media|uploads|videos)/[^"\']+)["\']'
 )
 MEDIA_DEFAULT_RE = re.compile(
-    r'\b(?:src|poster|videoSrc|posterPath|image|bgImage)\s*[:=]\s*["\'](?P<path>/(?:assets|images|media|uploads|videos)/[^"\']+)["\']'
+    r'\b(?:src|poster|videoSrc|posterPath|image|bgImage)\s*[:=]\s*["\'](?P<path>(?:/(?:assets|images|media|uploads|videos)/|(?:\.\./)*src/assets/)[^"\']+)["\']'
+)
+CONTENT_SRC_ASSETS_RE = re.compile(
+    r'\b(?:src|poster|videoSrc|posterPath|image|bgImage)\s*[:=]\s*["\'](?P<path>(?:\.\./)*src/assets/[^"\']+)["\']'
+)
+BACKGROUND_IMAGE_LITERAL_RE = re.compile(
+    r'(?:background(?:-image)?\s*:\s*url\(\s*["\']?|bg-\[url\(\s*["\']?)'
+    r'(?P<path>(?:/(?:assets|images|media|uploads|videos)/|(?:\.\./)*src/assets/)[^"\'\)\]\s]+)',
+    re.IGNORECASE,
+)
+STRING_ASSIGNMENT_RE = re.compile(
+    r'\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?P<quote>["\'`])(?P<value>[^"\'`\n]{8,})(?P=quote)'
+)
+OBJECT_COPY_FIELD_RE = re.compile(
+    r'\b(?P<name>title|subtitle|heading|headline|eyebrow|description|desc|intro|caption|copy|quote|label|note|value|outlet|day|event|time|loc|location|ctaText|placeholderText)\s*:\s*(?P<quote>["\'`])(?P<value>[^"\'`\n]{3,})(?P=quote)'
+)
+VISIBLE_COMPONENT_PROP_RE = re.compile(
+    r'(?<![-\w])(?P<name>brandName|tagline|foundedLabel|locationText|mapsLinkText|copyrightText|label|placeholderText|ctaText|mobileCtaText)\s*=\s*(?P<quote>["\'])(?P<value>[^"\'\n]{3,})(?P=quote)'
+)
+ALLOWED_STATIC_COPY_RE = re.compile(
+    r'\bdata-static-copy\s*=\s*(?P<quote>["\'])(?:ui|chrome|control|decorative|legal)(?P=quote)'
 )
 SERVICE_BULLET_ARRAY_RE = re.compile(
     r'\b(?:serviceBullets|bullets)\s*[:=]\s*\[[^\]]*["\'][^"\']*\s+[^"\']*["\']',
@@ -210,7 +247,43 @@ def snippet(text: str, limit: int = 80) -> str:
 
 
 def has_static_escape(attrs: str) -> bool:
-    return any(flag in attrs for flag in ('data-static-copy', 'data-static-media', 'aria-hidden="true"', "aria-hidden='true'"))
+    return (
+        'data-static-media' in attrs
+        or 'aria-hidden="true"' in attrs
+        or "aria-hidden='true'" in attrs
+        or ALLOWED_STATIC_COPY_RE.search(attrs) is not None
+    )
+
+
+def has_unqualified_static_copy(attrs: str) -> bool:
+    return 'data-static-copy' in attrs and ALLOWED_STATIC_COPY_RE.search(attrs) is None
+
+
+def looks_like_copy_variable_name(name: str) -> bool:
+    lower = name.lower().replace('_', '').replace('-', '')
+    exact_names = {
+        'title', 'subtitle', 'heading', 'headline', 'eyebrow', 'description',
+        'intro', 'caption', 'copy', 'text', 'label', 'quote', 'ctalabel',
+        'ctatext', 'buttonlabel', 'buttontext',
+    }
+    semantic_suffixes = (
+        'title', 'subtitle', 'heading', 'headline', 'eyebrow', 'description',
+        'intro', 'caption', 'copy', 'quote', 'label',
+    )
+    return lower in exact_names or lower.endswith(semantic_suffixes)
+
+
+def looks_like_utility_or_field_literal(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped:
+        return True
+    if stripped.startswith(('/', './', '../', '#')) or stripped.startswith(('http://', 'https://')):
+        return True
+    if re.fullmatch(r'[A-Za-z0-9_.:-]+', stripped) and '.' in stripped:
+        # Tina field references like page.title or collection.entry.field.
+        return True
+    utility_tokens = ('text-', 'bg-', 'px-', 'py-', 'mx-', 'my-', 'mt-', 'mb-', 'grid', 'flex', 'rounded', 'w-', 'h-', 'md:', 'lg:')
+    return any(token in stripped for token in utility_tokens)
 
 
 def validate_tina_editable_surfaces(project_root: Path, files: list[Path], issues: list[Issue]) -> None:
@@ -248,9 +321,15 @@ def validate_tina_editable_surfaces(project_root: Path, files: list[Path], issue
                     continue
                 attrs = match.group('attrs')
                 body = match.group('body')
+                plain_body = strip_tags(body)
+                if has_unqualified_static_copy(attrs) and looks_like_copy(plain_body):
+                    issues.append(Issue(
+                        'error', rel,
+                        f'line {line_number(visible_markup, match.start())}: data-static-copy must be reserved for non-marketing UI chrome with an explicit reason such as data-static-copy="ui"; move visible site copy into Tina content: "{snippet(plain_body)}"',
+                    ))
+                    continue
                 if has_static_escape(attrs) or 'data-tina-field' in attrs:
                     continue
-                plain_body = strip_tags(body)
                 if 'data-typewriter' in attrs and ('{' in plain_body or looks_like_copy(plain_body)):
                     issues.append(Issue(
                         'error', rel,
@@ -279,17 +358,62 @@ def validate_tina_editable_surfaces(project_root: Path, files: list[Path], issue
             if line_end == -1:
                 line_end = len(visible_markup)
             line = visible_markup[line_start:line_end]
-            if 'data-tina-field' in line or 'data-static-media' in line:
+            if has_static_escape(line):
                 continue
             issues.append(Issue(
                 'error', rel,
                 f'line {line_number(visible_markup, match.start())}: hardcoded media path must be Tina/content/manifest-backed: {match.group("path")}',
             ))
 
+        for match in BACKGROUND_IMAGE_LITERAL_RE.finditer(content):
+            line_start = content.rfind('\n', 0, match.start()) + 1
+            line_end = content.find('\n', match.start())
+            if line_end == -1:
+                line_end = len(content)
+            line = content[line_start:line_end]
+            if has_static_escape(line):
+                continue
+            issues.append(Issue(
+                'error', rel,
+                f'line {line_number(content, match.start())}: hardcoded background image must be Tina/content/manifest-backed with an editable image field: {match.group("path")}',
+            ))
+
         for match in MEDIA_DEFAULT_RE.finditer(frontmatter):
             issues.append(Issue(
                 'error', rel,
                 f'line {line_number(frontmatter, match.start())}: hardcoded media path must be Tina/content/manifest-backed: {match.group("path")}',
+            ))
+
+        for match in STRING_ASSIGNMENT_RE.finditer(frontmatter):
+            name = match.group('name')
+            value = match.group('value')
+            if not looks_like_copy_variable_name(name):
+                continue
+            if looks_like_utility_or_field_literal(value) or not looks_like_copy(value):
+                continue
+            issues.append(Issue(
+                'error', rel,
+                f'line {line_number(frontmatter, match.start())}: hardcoded copy variable "{name}" not backed by Tina content: "{snippet(value)}"',
+            ))
+
+        for match in OBJECT_COPY_FIELD_RE.finditer(frontmatter):
+            name = match.group('name')
+            value = match.group('value')
+            if looks_like_utility_or_field_literal(value) or not looks_like_copy(value):
+                continue
+            issues.append(Issue(
+                'error', rel,
+                f'line {line_number(frontmatter, match.start())}: hardcoded copy object field "{name}" not backed by Tina content: "{snippet(value)}"',
+            ))
+
+        for match in VISIBLE_COMPONENT_PROP_RE.finditer(visible_markup):
+            name = match.group('name')
+            value = match.group('value')
+            if looks_like_utility_or_field_literal(value) or not looks_like_copy(value):
+                continue
+            issues.append(Issue(
+                'error', rel,
+                f'line {line_number(visible_markup, match.start())}: hardcoded visible component prop "{name}" must come from Tina/settings content: "{snippet(value)}"',
             ))
 
         if SERVICE_BULLET_ARRAY_RE.search(frontmatter):
@@ -313,6 +437,112 @@ def validate_tina_editable_surfaces(project_root: Path, files: list[Path], issue
                 issues.append(Issue(
                     'error', rel,
                     'contentImages[] usage found without Tina image field override; add an optional image/bgImage prop, resolve Tina-first (tinaField ?? contentImages[...]), and render data-tina-field on the <img>',
+                ))
+
+
+def _find_matching_brace(text: str, start: int) -> int:
+    depth = 0
+    in_string: str | None = None
+    escape = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == in_string:
+                in_string = None
+            continue
+        if ch in {'"', "'", '`'}:
+            in_string = ch
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return idx
+    return -1
+
+
+def _collection_block_for_path(tina_content: str, path_offset: int) -> str:
+    start = tina_content.rfind('{', 0, path_offset)
+    while start != -1:
+        end = _find_matching_brace(tina_content, start)
+        if end != -1 and end >= path_offset:
+            block = tina_content[start:end + 1]
+            if 'path:' in block and 'src/content/' in block:
+                return block
+        start = tina_content.rfind('{', 0, start)
+    window_start = max(0, path_offset - 500)
+    window_end = min(len(tina_content), path_offset + 800)
+    return tina_content[window_start:window_end]
+
+
+def _extract_tina_collections(tina_content: str) -> list[dict[str, str]]:
+    collections: list[dict[str, str]] = []
+    for match in re.finditer(r'path:\s*["\']src/content/(?P<path>[^"\']+)["\']', tina_content):
+        block = _collection_block_for_path(tina_content, match.start())
+        name_match = re.search(r'name:\s*["\'](?P<name>[\w-]+)["\']', block)
+        format_match = re.search(r'format:\s*["\'](?P<format>\w+)["\']', block)
+        collections.append({
+            'name': name_match.group('name') if name_match else match.group('path'),
+            'path': match.group('path'),
+            'format': (format_match.group('format') if format_match else 'md').lower(),
+        })
+    return collections
+
+
+def _content_frontmatter(path: Path) -> str:
+    try:
+        text = path.read_text()
+    except UnicodeDecodeError:
+        return ''
+    if path.suffix in {'.md', '.mdx'} and text.startswith('---'):
+        end = text.find('\n---', 3)
+        if end != -1:
+            return text[: end + 4]
+    if path.suffix == '.json':
+        return text
+    return ''
+
+
+def validate_tina_content_contracts(project_root: Path, tina_content: str, issues: list[Issue]) -> None:
+    """Validate Tina collection contracts against file-backed content.
+
+    Tina's FilesystemBridge indexes files by collection format. If a collection
+    says `format: "mdx"` but the files are `.md`, the admin silently appears
+    empty even though Astro's content loader may still render the site. Content
+    image fields also cannot point at raw `src/assets/**` paths because those
+    are Vite module inputs, not public URLs or Tina media entries.
+    """
+    for collection in _extract_tina_collections(tina_content):
+        content_dir = project_root / 'src' / 'content' / collection['path']
+        if not content_dir.exists():
+            continue
+        expected_suffix = f".{collection['format']}"
+        if collection['format'] in {'md', 'mdx', 'json'}:
+            for content_file in content_dir.rglob('*'):
+                if not content_file.is_file() or content_file.name.startswith('.'):
+                    continue
+                if content_file.suffix not in {'.md', '.mdx', '.json'}:
+                    continue
+                rel = str(content_file.relative_to(project_root))
+                if content_file.suffix != expected_suffix:
+                    issues.append(Issue(
+                        'error', 'tina/config.ts',
+                        f'TinaCMS collection "{collection["name"]}" declares format "{collection["format"]}" but {rel} has extension "{content_file.suffix}"; align collection format with file extensions so the admin indexes documents',
+                    ))
+        for content_file in content_dir.rglob('*'):
+            if not content_file.is_file() or content_file.suffix not in {'.md', '.mdx', '.json'}:
+                continue
+            frontmatter = _content_frontmatter(content_file)
+            for match in CONTENT_SRC_ASSETS_RE.finditer(frontmatter):
+                rel = str(content_file.relative_to(project_root))
+                issues.append(Issue(
+                    'error', rel,
+                    f'line {line_number(frontmatter, match.start())}: Tina content image fields must not store raw src/assets paths; copy media to public/images or resolve through a generated contentImages map: {match.group("path")}',
                 ))
 
 
@@ -369,6 +599,9 @@ def _format_jsonschema_path(absolute_path: Any) -> str:
 
 def validate_with_jsonschema(value: Any, schema: dict[str, Any], issues: list[Issue], artifact: str) -> None:
     """Full jsonschema validation — supports oneOf/anyOf/allOf, format, pattern, additionalProperties:false."""
+    if Draft202012Validator is None:
+        issues.append(Issue('error', artifact, 'jsonschema library required but Draft202012Validator is unavailable'))
+        return
     validator = Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
     for err in sorted(validator.iter_errors(value), key=lambda e: e.path):
         path = _format_jsonschema_path(err.absolute_path)
@@ -408,21 +641,196 @@ def validate_with_fallback(value: Any, schema: dict[str, Any], root: dict[str, A
                 validate_with_fallback(item, item_schema, root, f'{path}[{idx}]', issues, artifact)
 
 
+FALLBACK_UNSUPPORTED_KEYWORDS = {
+    'allOf', 'anyOf', 'oneOf', 'if', 'then', 'else', 'not', 'const',
+    'format', 'pattern', 'minLength', 'maxLength', 'minItems', 'maxItems',
+    'minProperties', 'maxProperties', 'minimum', 'maximum', 'exclusiveMinimum',
+    'exclusiveMaximum', 'multipleOf', 'uniqueItems', 'contains',
+}
+
+
+def schema_keywords_requiring_jsonschema(schema: Any, path: str = '$') -> list[str]:
+    """Return advanced JSON Schema keywords the fallback validator cannot safely enforce."""
+    found: list[str] = []
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            if key in FALLBACK_UNSUPPORTED_KEYWORDS:
+                found.append(f'{path}.{key}')
+            elif key == 'additionalProperties' and value is False:
+                found.append(f'{path}.additionalProperties=false')
+            if isinstance(value, (dict, list)):
+                found.extend(schema_keywords_requiring_jsonschema(value, f'{path}.{key}'))
+    elif isinstance(schema, list):
+        for idx, item in enumerate(schema):
+            found.extend(schema_keywords_requiring_jsonschema(item, f'{path}[{idx}]'))
+    return found
+
+
 def validate_value(value: Any, schema: dict[str, Any], root: dict[str, Any], path: str, issues: list[Issue], artifact: str) -> None:
     """Dispatch to jsonschema library when available, hand-rolled fallback otherwise."""
     if HAVE_JSONSCHEMA:
         validate_with_jsonschema(value, schema, issues, artifact)
     else:
+        unsupported = schema_keywords_requiring_jsonschema(schema)
+        if unsupported:
+            preview = ', '.join(unsupported[:8])
+            if len(unsupported) > 8:
+                preview += f', ... ({len(unsupported)} total)'
+            issues.append(Issue('error', artifact, f'jsonschema library required for schema keywords unsupported by fallback subset: {preview}'))
+            return
         validate_with_fallback(value, schema, root, path, issues, artifact)
 
 
-SECRET_ARTIFACTS = {'vps-connection.json', 'bootstrap-result.json'}
+def validate_tina_blueprint_contract(data: dict[str, Any], issues: list[Issue]) -> None:
+    """Semantic checks for the Tina-first editable content contract.
+
+    The JSON Schema covers structure; these checks produce stable, actionable
+    messages even when the fallback schema validator is in use.
+    """
+    settings = data.get('settings')
+    if not isinstance(settings, dict):
+        issues.append(Issue('error', '01-tina-blueprint.json', 'settings must be an object with siteName, nav, footerLinks, copyrightText, and seo'))
+    else:
+        for key in ('siteName', 'nav', 'footerLinks', 'copyrightText', 'seo'):
+            if key not in settings:
+                issues.append(Issue('error', '01-tina-blueprint.json', f'settings missing required {key}'))
+        nav = settings.get('nav')
+        if not isinstance(nav, list) or not nav:
+            issues.append(Issue('error', '01-tina-blueprint.json', 'settings.nav must contain at least one navigation item'))
+        footer_links = settings.get('footerLinks')
+        if not isinstance(footer_links, list):
+            issues.append(Issue('error', '01-tina-blueprint.json', 'settings.footerLinks must be an array of footer-owned editable links'))
+        if not isinstance(settings.get('copyrightText'), str) or not settings.get('copyrightText'):
+            issues.append(Issue('error', '01-tina-blueprint.json', 'settings.copyrightText must be a non-empty editable string'))
+
+    pages = data.get('pages')
+    if isinstance(pages, list):
+        seen_page_ids: set[str] = set()
+        for page_idx, page in enumerate(pages):
+            if not isinstance(page, dict):
+                continue
+            page_id = str(page.get('id') or '')
+            if page_id and page_id in seen_page_ids:
+                issues.append(Issue('error', '01-tina-blueprint.json', f'pages[{page_idx}] duplicate id {page_id}'))
+            if page_id:
+                seen_page_ids.add(page_id)
+            seen_section_ids: set[str] = set()
+            sections = page.get('sections')
+            if not isinstance(sections, list):
+                continue
+            for section_idx, section in enumerate(sections):
+                if not isinstance(section, dict):
+                    continue
+                section_id = str(section.get('id') or '')
+                if section_id and section_id in seen_section_ids:
+                    issues.append(Issue('error', '01-tina-blueprint.json', f'pages[{page_idx}].sections[{section_idx}] duplicate id {section_id}'))
+                if section_id:
+                    seen_section_ids.add(section_id)
+
+    surfaces = data.get('editable_surface_map')
+    if not isinstance(surfaces, list) or not surfaces:
+        issues.append(Issue('error', '01-tina-blueprint.json', 'editable_surface_map must contain every visible/editable field'))
+        surfaces = []
+    for idx, surface in enumerate(surfaces):
+        if not isinstance(surface, dict):
+            issues.append(Issue('error', '01-tina-blueprint.json', f'editable_surface_map[{idx}] must be an object'))
+            continue
+        for key in ('field_ref', 'field_type', 'owner', 'source_default', 'tina_field_path', 'content_path', 'render_intent', 'required_marker'):
+            if key not in surface or surface.get(key) in ('', None):
+                issues.append(Issue('error', '01-tina-blueprint.json', f'editable_surface_map[{idx}] missing required {key}'))
+        if surface.get('required_marker') == 'static-exempt' and not surface.get('static_exemption_reason'):
+            issues.append(Issue('error', '01-tina-blueprint.json', f'editable_surface_map[{idx}] static-exempt field missing static_exemption_reason'))
+    for key in ('field_ref', 'tina_field_path', 'content_path'):
+        seen_values: set[str] = set()
+        for idx, surface in enumerate(surfaces):
+            if not isinstance(surface, dict):
+                continue
+            value = surface.get(key)
+            if not isinstance(value, str) or not value:
+                continue
+            if value in seen_values:
+                issues.append(Issue('error', '01-tina-blueprint.json', f'editable_surface_map[{idx}] duplicate {key}: {value}'))
+            seen_values.add(value)
+
+    media_fields = data.get('media_fields')
+    if not isinstance(media_fields, list):
+        issues.append(Issue('error', '01-tina-blueprint.json', 'media_fields must be an array'))
+        media_fields = []
+    for idx, media in enumerate(media_fields):
+        if not isinstance(media, dict):
+            issues.append(Issue('error', '01-tina-blueprint.json', f'media_fields[{idx}] must be an object'))
+            continue
+        for key in ('field_ref', 'field_type', 'source_default', 'tina_field_path', 'content_path', 'render_intent', 'required_marker', 'surface_kind'):
+            if key not in media or media.get(key) in ('', None):
+                issues.append(Issue('error', '01-tina-blueprint.json', f'media_fields[{idx}] missing required {key}'))
+    seen_media_refs: set[str] = set()
+    for idx, media in enumerate(media_fields):
+        if not isinstance(media, dict):
+            continue
+        field_ref = media.get('field_ref')
+        if not isinstance(field_ref, str) or not field_ref:
+            continue
+        if field_ref in seen_media_refs:
+            issues.append(Issue('error', '01-tina-blueprint.json', f'media_fields[{idx}] duplicate field_ref: {field_ref}'))
+        seen_media_refs.add(field_ref)
+
+
+def validate_tina_coverage_contract(pipeline_dir: Path, phase_name: str | None, issues: list[Issue]) -> None:
+    """Ensure frontend codegen proved coverage for every blueprint editable field."""
+    if phase_name not in {'build', 'final'}:
+        return
+    blueprint = _load_pipeline_json(pipeline_dir / '01-tina-blueprint.json')
+    coverage_doc = _load_pipeline_json(pipeline_dir / '03-tina-coverage.json')
+    if not isinstance(blueprint, dict) or not isinstance(coverage_doc, dict):
+        return
+
+    surfaces = blueprint.get('editable_surface_map')
+    coverage_entries = coverage_doc.get('coverage')
+    if not isinstance(surfaces, list) or not isinstance(coverage_entries, list):
+        return
+
+    blueprint_by_ref: dict[str, dict[str, Any]] = {}
+    for surface in surfaces:
+        if isinstance(surface, dict) and isinstance(surface.get('field_ref'), str):
+            blueprint_by_ref[surface['field_ref']] = surface
+
+    coverage_by_ref: dict[str, dict[str, Any]] = {}
+    for idx, entry in enumerate(coverage_entries):
+        if not isinstance(entry, dict):
+            continue
+        field_ref = entry.get('field_ref')
+        if not isinstance(field_ref, str) or not field_ref:
+            continue
+        if field_ref in coverage_by_ref:
+            issues.append(Issue('error', '03-tina-coverage.json', f'coverage[{idx}] duplicate field_ref: {field_ref}'))
+        coverage_by_ref[field_ref] = entry
+        if field_ref not in blueprint_by_ref:
+            issues.append(Issue('error', '03-tina-coverage.json', f'coverage[{idx}] field_ref is not declared in blueprint: {field_ref}'))
+        if entry.get('declared_in_blueprint') is not True:
+            issues.append(Issue('error', '03-tina-coverage.json', f'coverage[{idx}] declared_in_blueprint must be true: {field_ref}'))
+
+    for field_ref, surface in blueprint_by_ref.items():
+        entry = coverage_by_ref.get(field_ref)
+        if entry is None:
+            issues.append(Issue('error', '03-tina-coverage.json', f'missing coverage for blueprint field_ref: {field_ref}'))
+            continue
+        if entry.get('surface_kind') != surface.get('surface_kind'):
+            issues.append(Issue(
+                'error', '03-tina-coverage.json',
+                f'coverage surface_kind mismatch for {field_ref}: expected {surface.get("surface_kind")}, got {entry.get("surface_kind")}',
+            ))
+        required_marker = surface.get('required_marker')
+        if required_marker == 'data-tina-field' and entry.get('has_tina_field_marker') is not True:
+            issues.append(Issue('error', '03-tina-coverage.json', f'coverage missing data-tina-field proof for {field_ref}'))
+
+
+SECRET_ARTIFACTS = {'vps-connection.json', 'bootstrap-result.json', 'installation-summary.md', 'installation.log'}
 
 CANONICAL_PACKAGE_RANGES = {
-    'astro': '^6.4.8',
-    '@astrojs/node': '^10.1.4',
-    '@astrojs/mdx': '^6.0.3',
-    '@astrojs/react': '^5.0.7',
+    'astro': '^7.0.2',
+    '@astrojs/node': '^11.0.0',
+    '@astrojs/mdx': '^7.0.0',
+    '@astrojs/react': '^6.0.0',
     '@tailwindcss/vite': '^4.3.1',
     'tailwindcss': '^4.3.1',
     '@tinacms/astro': '^0.5.0',
@@ -439,10 +847,17 @@ REQUIRED_GITIGNORE_PATTERNS = {
     '.env.*',
     '*.log',
     'pipeline/vps-connection.json',
+    'pipeline/vps-connection.json.*',
     'pipeline/.git-credentials',
+    'pipeline/bootstrap-result.json',
+    'pipeline/bootstrap-result.json.*',
+    'pipeline/bootstrap*.json',
     'pipeline/bootstrap*.log',
     'pipeline/bootstrap*.pid',
     'pipeline/bootstrap*.exit',
+    'pipeline/installation-summary.md',
+    'pipeline/installation.log',
+    'pipeline/setup-wrapper.*',
     'pipeline/RESULT.md',
     'pipeline/HUMAN_REVIEW.md',
 }
@@ -671,6 +1086,9 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
         if data.get('_requires_human_confirmation') is True:
             issues.append(Issue('warning', artifact_name, 'brief is flagged for human confirmation'))
 
+    if artifact_name == '01-tina-blueprint.json' and isinstance(data, dict):
+        validate_tina_blueprint_contract(data, issues)
+
     if artifact_name == '02-asset-manifest.json' and isinstance(data, dict) and check_asset_paths:
         # OG image path check: warn if in src/ instead of public/
         og_path = None
@@ -795,6 +1213,199 @@ def validate_artifact(project_root: Path, pipeline_dir: Path, artifact_name: str
                     f'hyperframes_hero intensity unknown: {hf_intensity} (expected subtle or moderate)'))
 
 
+def validate_instagram_content_image_handoff(pipeline_dir: Path, phase_name: str | None, issues: list[Issue]) -> None:
+    """Reject placeholder-only content images when usable Instagram photos exist.
+
+    Instagram extraction writes downloaded source images to
+    pipeline/00-instagram/assets/. When instagram_use is "both" (or an explicit
+    content/media value), Phase 3.5 must prefer those real photos before falling
+    back to deterministic SVG placeholders.
+    """
+    if phase_name not in {'assets', 'build', 'final'}:
+        return
+
+    brief_path = pipeline_dir / '00-brief.json'
+    manifest_path = pipeline_dir / '02-asset-manifest.json'
+    if not brief_path.exists() or not manifest_path.exists():
+        return
+
+    try:
+        brief = load_json(brief_path)
+        manifest = load_json(manifest_path)
+    except (json.JSONDecodeError, OSError):
+        return
+    if not isinstance(brief, dict) or not isinstance(manifest, dict):
+        return
+
+    instagram_use = str(brief.get('instagram_use', '')).lower()
+    if instagram_use not in {'both', 'content', 'content_images', 'media', 'photos'}:
+        return
+
+    ig_assets_dir = pipeline_dir / '00-instagram' / 'assets'
+    if not ig_assets_dir.exists():
+        return
+    usable_assets = [
+        asset for asset in ig_assets_dir.iterdir()
+        if asset.is_file()
+        and asset.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp', '.avif'}
+        and asset.stat().st_size >= 10 * 1024
+    ]
+    if len(usable_assets) < 3:
+        return
+
+    content_images = manifest.get('content_images')
+    if not isinstance(content_images, list) or not content_images:
+        return
+    renderable_entries = [entry for entry in content_images if isinstance(entry, dict) and entry.get('status') != 'failed']
+    if not renderable_entries:
+        return
+
+    has_instagram_entry = any(
+        str(entry.get('status', '')).lower() == 'scraped_instagram'
+        or str(entry.get('source', '')).lower().startswith('instagram')
+        or '00-instagram' in str(entry.get('source_path', ''))
+        or '/instagram/' in str(entry.get('path', ''))
+        for entry in renderable_entries
+    )
+    if has_instagram_entry:
+        return
+
+    if all(str(entry.get('status', '')).lower() == 'placeholder' for entry in renderable_entries):
+        issues.append(Issue(
+            'error',
+            '02-asset-manifest.json',
+            f'Instagram assets exist ({len(usable_assets)} usable files in pipeline/00-instagram/assets/) and instagram_use is "{instagram_use}", but every content image is still a placeholder; copy/select scraped Instagram photos into public/images or mark manifest entries with status: "scraped_instagram" before falling back to deterministic placeholders',
+        ))
+
+
+INSTAGRAM_CONTENT_USES = {'both', 'content', 'content_images', 'media', 'photos'}
+
+
+def _load_pipeline_json(path: Path) -> Any | None:
+    try:
+        return load_json(path)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _usable_instagram_assets(pipeline_dir: Path) -> list[Path]:
+    ig_assets_dir = pipeline_dir / '00-instagram' / 'assets'
+    if not ig_assets_dir.exists():
+        return []
+    return [
+        asset for asset in ig_assets_dir.iterdir()
+        if asset.is_file()
+        and asset.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp', '.avif'}
+        and asset.stat().st_size >= 10 * 1024
+    ]
+
+
+def _entry_is_instagram_backed(entry: dict[str, Any]) -> bool:
+    return (
+        str(entry.get('status', '')).lower() == 'scraped_instagram'
+        or str(entry.get('source', '')).lower().startswith('instagram')
+        or '00-instagram' in str(entry.get('source_path', '')).lower()
+        or '/instagram/' in str(entry.get('path', '')).lower()
+        or '/instagram/' in str(entry.get('public_path', '')).lower()
+    )
+
+
+def _normalise_media_refs(*values: Any) -> set[str]:
+    refs: set[str] = set()
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            refs.add(value.strip())
+    return refs
+
+
+def _url_matches_instagram_media(url: str, instagram_refs: set[str]) -> bool:
+    lowered = url.lower()
+    if 'instagram' in lowered or '/00-instagram/' in lowered or '/images/instagram/' in lowered:
+        return True
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or '').lower().rstrip('.')
+    except Exception:
+        host = ''
+    if (
+        host == 'cdninstagram.com'
+        or host.endswith('.cdninstagram.com')
+        or host == 'fbcdn.net'
+        or host.endswith('.fbcdn.net')
+    ):
+        return True
+    return any(ref and (url == ref or url.endswith(ref) or ref in url) for ref in instagram_refs)
+
+
+def validate_instagram_video_background_handoff(pipeline_dir: Path, phase_name: str | None, issues: list[Issue]) -> None:
+    """Require Instagram-backed image-to-video inputs for requested background clips.
+
+    When Instagram is an explicit content/media source and video backgrounds are
+    requested, Phase 3.6 must animate the selected Instagram stills via i2v.
+    Merely generating unrelated t2v clips — or using the Instagram still only as
+    a static poster — breaks the user's content-source expectation.
+    """
+    if phase_name not in {'assets', 'build', 'final'}:
+        return
+
+    brief = _load_pipeline_json(pipeline_dir / '00-brief.json')
+    creative = _load_pipeline_json(pipeline_dir / '01-creative-brief.json')
+    manifest = _load_pipeline_json(pipeline_dir / '02-asset-manifest.json')
+    if not isinstance(brief, dict) or not isinstance(creative, dict) or not isinstance(manifest, dict):
+        return
+
+    instagram_use = str(brief.get('instagram_use', '')).lower()
+    if instagram_use not in INSTAGRAM_CONTENT_USES:
+        return
+
+    usable_assets = _usable_instagram_assets(pipeline_dir)
+    if len(usable_assets) < 3:
+        return
+
+    motion_direction = creative.get('motion_direction')
+    video_requested = isinstance(motion_direction, dict) and motion_direction.get('video_backgrounds') is True
+    video_backgrounds = manifest.get('video_backgrounds')
+    has_video_entries = isinstance(video_backgrounds, list) and bool(video_backgrounds)
+    if not video_requested and not has_video_entries:
+        return
+    if not has_video_entries:
+        if phase_name in {'build', 'final'}:
+            issues.append(Issue(
+                'error', '02-asset-manifest.json',
+                f'Instagram assets exist ({len(usable_assets)} usable files) and video backgrounds are requested, but video_backgrounds is empty; derive AI-animated background clips from selected Instagram stills before build/final validation',
+            ))
+        return
+
+    instagram_refs: set[str] = set()
+    content_images = manifest.get('content_images', [])
+    if isinstance(content_images, list):
+        for entry in content_images:
+            if not isinstance(entry, dict) or not _entry_is_instagram_backed(entry):
+                continue
+            instagram_refs.update(_normalise_media_refs(
+                entry.get('path'),
+                entry.get('public_path'),
+                entry.get('source_path'),
+            ))
+
+    video_entries = video_backgrounds if isinstance(video_backgrounds, list) else []
+    for video in video_entries:
+        if not isinstance(video, dict) or str(video.get('status', '')).lower() == 'failed':
+            continue
+        image_url = video.get('image_url')
+        if not isinstance(image_url, str) or not image_url.strip():
+            issues.append(Issue(
+                'error', '02-asset-manifest.json',
+                f'Instagram content source requires image-to-video background input: id={video.get("id", "?")} is missing image_url from a selected Instagram still',
+            ))
+            continue
+        if not _url_matches_instagram_media(image_url.strip(), instagram_refs):
+            issues.append(Issue(
+                'error', '02-asset-manifest.json',
+                f'Instagram content source requires image-to-video background input from scraped Instagram media: id={video.get("id", "?")} image_url={image_url}',
+            ))
+
+
 
 def validate_project(project_root: Path, phase_name: str | None, require_all: bool, pipeline_dir: Path | None = None) -> tuple[list[Issue], str]:
     issues: list[Issue] = []
@@ -839,6 +1450,10 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
         if (pipeline_dir / artifact).exists():
             validate_artifact(project_root, pipeline_dir, artifact, schema, issues, missing_is_error=True, check_asset_paths=False)
 
+    validate_instagram_content_image_handoff(pipeline_dir, phase_name, issues)
+    validate_instagram_video_background_handoff(pipeline_dir, phase_name, issues)
+    validate_tina_coverage_contract(pipeline_dir, phase_name, issues)
+
     # ── Instagram extraction validation ───────────────────────────────
     if phase_name == 'instagram':
         ig_dir = pipeline_dir / '00-instagram'
@@ -851,6 +1466,11 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                     if not isinstance(profile_data, dict):
                         issues.append(Issue('error', '00-instagram/profile.json', 'root must be a JSON object'))
                     else:
+                        try:
+                            profile_schema = load_json(SCHEMA_DIR / '00-instagram-extraction.schema.json')
+                            validate_value(profile_data, profile_schema, profile_schema, '$', issues, '00-instagram/profile.json')
+                        except Exception as exc:
+                            issues.append(Issue('error', '00-instagram/profile.json', f'cannot load schema: {exc}'))
                         for field in ['schema_version', 'profile', 'extraction_metadata']:
                             if field not in profile_data:
                                 issues.append(Issue('error', '00-instagram/profile.json', f'missing required field: {field}'))
@@ -971,6 +1591,7 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                     content_dir = project_root / 'src' / 'content' / tina_path
                     if not content_dir.exists():
                         issues.append(Issue('error', 'tina/config.ts', f'TinaCMS collection path "src/content/{tina_path}" does not exist — directory missing'))
+                validate_tina_content_contracts(project_root, tina_content, issues)
             if not astro_config.exists():
                 issues.append(Issue('error', 'astro.config.mjs', 'TinaCMS dependency present but astro.config.mjs is missing'))
             else:
@@ -989,6 +1610,11 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                 island_content = island_route.read_text()
                 if 'export const ALL' in island_content or 'export const POST' not in island_content:
                     issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'Tina visual editing island route must export POST, not ALL'))
+                imports_island_registry = re.search(r'import\s+\{?\s*islands\b', island_content) is not None
+                has_inline_island_fetch = re.search(r'\bislands\s*=\s*\{[\s\S]*\bfetch\s*:', island_content) is not None
+                has_empty_registry = re.search(r'\bislands\s*=\s*\{\s*\}', island_content) is not None
+                if has_empty_registry or not (imports_island_registry or has_inline_island_fetch):
+                    issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'Tina visual editing island registry appears empty; register at least one island with fetch/component/wrapper/propsFromData so bridge refreshes editable regions'))
             if not api_route.exists():
                 issues.append(Issue('error', 'src/pages/api/tina/[...routes].ts', 'missing Tina self-hosted GraphQL route'))
             else:
@@ -1018,6 +1644,16 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                 issues.append(Issue('error', 'src/lib/tina', 'maximum TinaCMS visual editing requires requestWithMetadata() data loaders'))
             if 'tinaField' not in all_source or 'data-tina-field' not in all_source:
                 issues.append(Issue('error', 'src/components', 'maximum TinaCMS visual editing requires tinaField() + data-tina-field click-to-edit markers on visible editable DOM nodes'))
+            for source_path in project_source_files:
+                if source_path.suffix != '.astro':
+                    continue
+                try:
+                    page_source = source_path.read_text()
+                except UnicodeDecodeError:
+                    continue
+                if 'astro:content' in page_source and 'requestWithMetadata' not in page_source:
+                    rel = str(source_path.relative_to(project_root))
+                    issues.append(Issue('error', rel, 'Astro content-backed Tina page must call requestWithMetadata() in the page data loader; a re-export in src/lib/tina/data.ts does not register this page with the admin'))
             validate_tina_tsconfig(project_root, issues)
             if phase_name == 'final' or require_all:
                 validate_tina_admin_artifacts(project_root, issues)
@@ -1043,7 +1679,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Validate an astro-static project pipeline against local schema contracts.')
     parser.add_argument('project', help='Project directory to validate, e.g. /home/openclaw/websites/my-site')
     parser.add_argument('--require-all', action='store_true', help='Treat all known artifacts as required and run full filesystem checks')
-    parser.add_argument('--phase', choices=sorted(PHASES.keys()), help='Validate a specific workflow phase gate: startup, research, assets, build, final')
+    parser.add_argument('--phase', choices=sorted(PHASES.keys()), help='Validate a specific workflow phase gate: startup, research, blueprint, assets, build, final')
     parser.add_argument('--pipeline-dir', type=Path, help='Explicit pipeline directory (overrides auto-detection).')
     parser.add_argument('--profile', choices=sorted(PROFILES.keys()), default='astro-static',
                         help='Pipeline profile: astro-static (multi-host bootstrap) or ispconfig (single-host)')

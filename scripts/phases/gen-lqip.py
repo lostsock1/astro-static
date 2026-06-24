@@ -16,6 +16,7 @@ Exit codes:
   0  success — LQIP file written; data URI printed to stdout
   2  input image not found
   3  Pillow not installed
+  4  unsafe input/output path
 """
 from __future__ import annotations
 
@@ -47,6 +48,21 @@ def make_lqip(img_path: Path, *, width: int, blur: float, quality: int) -> str:
     return 'data:image/webp;base64,' + base64.b64encode(buf.getvalue()).decode('ascii')
 
 
+def safe_project_relative_path(path: Path, label: str) -> Path:
+    """Resolve a user-supplied path only if it stays inside the current project."""
+    if path.is_absolute():
+        raise ValueError(f'unsafe_{label}_path: absolute paths are not allowed: {path}')
+    if '..' in path.parts:
+        raise ValueError(f'unsafe_{label}_path: path traversal is not allowed: {path}')
+    project_root = Path.cwd().resolve()
+    resolved = (project_root / path).resolve()
+    try:
+        resolved.relative_to(project_root)
+    except ValueError:
+        raise ValueError(f'unsafe_{label}_path: resolved path escapes project root: {path}')
+    return resolved
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Generate LQIP data URI sibling file.')
     ap.add_argument('image', type=Path, help='Path to source image (PNG/WebP/JPG)')
@@ -60,12 +76,18 @@ def main() -> int:
                     help='Override output path (default: <stem>.lqip.txt next to source)')
     args = ap.parse_args()
 
-    if not args.image.exists():
+    try:
+        image_path = safe_project_relative_path(args.image, 'image')
+        out = safe_project_relative_path(args.out, 'output') if args.out else image_path.with_name(image_path.stem + '.lqip.txt')
+    except ValueError as exc:
+        print(f'ERROR: {exc}', file=sys.stderr)
+        return 4
+
+    if not image_path.exists():
         print(f'ERROR: image not found: {args.image}', file=sys.stderr)
         return 2
 
-    out = args.out or args.image.with_name(args.image.stem + '.lqip.txt')
-    data_uri = make_lqip(args.image, width=args.width, blur=args.blur, quality=args.quality)
+    data_uri = make_lqip(image_path, width=args.width, blur=args.blur, quality=args.quality)
     out.write_text(data_uri, encoding='ascii')
     print(data_uri)
     return 0

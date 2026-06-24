@@ -68,6 +68,8 @@ Write valid JSON to `pipeline/01-creative-brief.json`:
 
 4. **All required fields must be present.** The validator checks: `schema_version`, `client_name`, `site_type`, `brand_personality`, `color_direction`, `typography_direction`, `content_structure`, `competitive_analysis`, `recommendations`, `review_flags`, `content_model`.
 
+5. **Sections must be blueprint-normalizable.** Phase 2.6 runs `phases/tina-blueprint.py generate` and maps section strings to supported Tina block types. Use explicit words such as `hero`, `feature grid`, `gallery`, `CTA`, `rich text`, `team`, `FAQ`, `contact`, or `testimonial` in section descriptions. If a client truly needs a bespoke section, add it to `content_structure.special_sections` with the exact visible fields and media requirements so the orchestrator can halt for a supported custom-block contract instead of guessing.
+
 ```json
 {
   "schema_version": "astro-static-creative-brief/v1",

@@ -76,6 +76,21 @@ dimensions_to_wh() {
   fi
 }
 
+ensure_safe_relative_path() {
+  local path="$1" field="$2"
+  python3 - "$path" "$field" <<'PY'
+from pathlib import PurePosixPath
+import sys
+
+path, field = sys.argv[1], sys.argv[2]
+p = PurePosixPath(path)
+if not path or path.startswith('~') or p.is_absolute() or '..' in p.parts:
+    print(f"STATUS:ASSET_FALLBACK_FAILED reason=unsafe_path field={field} path={path}")
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 case "$MODE" in
   images)
     [ -f "$IMAGE_SHOTS" ] || { echo "STATUS:ASSET_FALLBACK_FAILED reason=missing_image_shot_list"; exit 1; }
@@ -85,9 +100,11 @@ case "$MODE" in
       path=$(jq -r ".images[$i].output_path" "$IMAGE_SHOTS")
       id=$(jq -r ".images[$i].id // \"image-$i\"" "$IMAGE_SHOTS")
       dims=$(jq -r ".images[$i].dimensions // empty" "$IMAGE_SHOTS")
+      ensure_safe_relative_path "$path" ".images[$i].output_path" || exit 1
       read -r w h < <(dimensions_to_wh "$dims" 1200 800)
       if [ ! -s "$path" ] || [ "$(wc -c < "$path")" -lt 1024 ]; then
         placeholder_path=$(placeholder_path_for "$path")
+        ensure_safe_relative_path "$placeholder_path" ".images[$i].output_path" || exit 1
         write_svg_placeholder "$placeholder_path" "$id placeholder" "$w" "$h"
         write_lqip_placeholder "$placeholder_path"
         jq --arg placeholder_path "$placeholder_path" ".images[$i].output_path = \$placeholder_path | .images[$i].status = \"placeholder\" | .images[$i].fallback_reason = \"generation_missing_or_too_small\"" \
@@ -100,6 +117,7 @@ case "$MODE" in
 
     jq --argjson images "$(jq '[.images[] | {
           id, type, dimensions, used_in, content_collection, content_entry,
+          field_ref, content_path, tina_default_value,
           status, fallback_reason,
           path: .output_path
         }]' "$IMAGE_SHOTS")" '.content_images = $images' \
@@ -118,6 +136,10 @@ case "$MODE" in
     for ((i=0; i<count; i++)); do
       path=$(jq -r ".videos[$i].output_path" "$VIDEO_SHOTS")
       poster=$(jq -r ".videos[$i].poster_path // empty" "$VIDEO_SHOTS")
+      ensure_safe_relative_path "$path" ".videos[$i].output_path" || exit 1
+      if [ -n "$poster" ] && [ "$poster" != "null" ]; then
+        ensure_safe_relative_path "$poster" ".videos[$i].poster_path" || exit 1
+      fi
       case "$poster" in
         "$path"|*.mp4|*.mov|*.m4v|*.webm)
           jq ".videos[$i].poster_path = null | .videos[$i].fallback = \"gradient\" | .videos[$i].fallback_reason = ((.videos[$i].fallback_reason // \"\") + \" poster_was_video\")" \

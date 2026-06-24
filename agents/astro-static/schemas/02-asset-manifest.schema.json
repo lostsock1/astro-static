@@ -107,9 +107,12 @@
         "used_in": { "type": "array", "items": { "type": "string" } },
         "content_collection": { "type": ["string", "null"] },
         "content_entry": { "type": ["string", "null"] },
+        "public_path": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] },
+        "source_path": { "type": ["string", "null"] },
         "status": {
           "type": "string",
-          "enum": ["pending", "generated", "failed", "placeholder"]
+          "enum": ["pending", "generated", "failed", "placeholder", "scraped_instagram"]
         },
         "fallback_reason": { "type": ["string", "null"] }
       },
@@ -126,6 +129,10 @@
         "aspect_ratio": { "type": "string" },
         "duration": { "type": "string" },
         "image_url": { "type": ["string", "null"] },
+        "source_image_path": { "type": ["string", "null"] },
+        "source_image_public_path": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] },
+        "source_path": { "type": ["string", "null"] },
         "used_in": { "type": "array", "items": { "type": "string" } },
         "status": {
           "type": "string",

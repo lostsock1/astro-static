@@ -75,12 +75,15 @@ GITEA_USER=$(jq -r '.gitea_user // "siteadmin"' "$VPS_JSON")
 
 LOCAL_WRAPPER=$(mktemp "$PROJECT_DIR/pipeline/setup-wrapper.XXXXXX")
 chmod 600 "$LOCAL_WRAPPER"
+cleanup_wrapper() { rm -f "$LOCAL_WRAPPER" 2>/dev/null || true; }
+trap cleanup_wrapper EXIT
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
   printf '%s\n' 'umask 077'
   printf '%s\n' 'export DEBIAN_FRONTEND=noninteractive'
   printf 'export PROJECT_NAME=%q\n' "$PROJECT"
+  printf 'export SSH_PORT=%q\n' "$PORT"
   printf 'export GITEA_ADMIN_USER=%q\n' "$GITEA_USER"
   printf 'export GITEA_ADMIN_PASS=%q\n' "$GITEA_PASS"
   printf '%s\n' 'export GITEA_ADMIN_EMAIL=admin@localhost'
@@ -93,8 +96,9 @@ chmod 600 "$LOCAL_WRAPPER"
 scp -P "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new \
   "$LOCAL_WRAPPER" "$USR@$HOST:/tmp/pipeline-setup-wrapper.sh" \
   >> "$PROJECT_DIR/pipeline/bootstrap.log" 2>&1 \
-  || { rm -f "$LOCAL_WRAPPER"; echo "STATUS:BOOTSTRAP_SETUP_UPLOAD_FAILED src=setup-wrapper" >> "$PROJECT_DIR/pipeline/bootstrap.log"; exit 1; }
+  || { echo "STATUS:BOOTSTRAP_SETUP_UPLOAD_FAILED src=setup-wrapper" >> "$PROJECT_DIR/pipeline/bootstrap.log"; exit 1; }
 rm -f "$LOCAL_WRAPPER"
+trap - EXIT
 $SSH "chmod 700 /tmp/pipeline-setup-wrapper.sh" >> "$PROJECT_DIR/pipeline/bootstrap.log" 2>&1 || true
 
 # Launch setup on VPS under nohup so it survives SSH disconnect.

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/03-tina-coverage.schema.json",
+  "title": "Astro Static Tina Coverage",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_name",
+    "coverage"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "astro-static-tina-coverage/v1"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "coverage": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/coverageEntry"
+      }
+    }
+  },
+  "$defs": {
+    "coverageEntry": {
+      "type": "object",
+      "required": [
+        "field_ref",
+        "declared_in_blueprint",
+        "tina_schema_path",
+        "astro_schema_path",
+        "content_file",
+        "renderer_file",
+        "island_name",
+        "has_tina_field_marker",
+        "surface_kind"
+      ],
+      "properties": {
+        "field_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.\\[\\]-]+$"
+        },
+        "declared_in_blueprint": {
+          "const": true
+        },
+        "tina_schema_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "astro_schema_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "renderer_file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "island_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "has_tina_field_marker": {
+          "type": "boolean"
+        },
+        "surface_kind": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,9 +1,9 @@
-# Astro 6 + Tailwind v4 + TinaCMS + shadcn/ui — Pipeline Reference
+# Astro 7 + Tailwind v4 + TinaCMS + shadcn/ui — Pipeline Reference
 
 > Reference document — not an agent. Loaded by name from `asset-generator.md`, `frontend-builder.md`, and `design-extractor.md`. Lives under `references/` so it doesn't appear in the agent picker.
 >
 > **Purpose:** Single source of truth for the astro-static pipeline agents.
-> Last verified: 2026-06-19 against npm metadata and official TinaCMS Astro docs.
+> Last verified: 2026-06-23 against npm metadata, Astro 7 upgrade docs, and official TinaCMS Astro docs.
 
 ---
 
@@ -117,6 +117,7 @@ These artifacts are shared contracts across the pipeline. Agents may enrich them
 - `pipeline/00-design-tokens/tokens.json` — extracted reference-site design signals
 - `pipeline/00-design-tokens/patterns/motion.yaml` — optional extracted motion signals from reference sites
 - `pipeline/01-creative-brief.json` — strategy, review flags, and formal content model
+- `pipeline/01-tina-blueprint.json` — deterministic Tina-owned editable content contract; required before asset generation
 - `pipeline/02-font-config.json` — canonical heading/body font configuration
 - `pipeline/02-asset-manifest.json` — generated or provided visual assets (includes `content_images` and `video_backgrounds` arrays)
 - `pipeline/02-image-shot-list.json` — derived content image generation tasks (Phase 3.5)
@@ -308,7 +309,7 @@ color: var(--color-red-500);
 
 ---
 
-## 2. Astro 6 Content Collections
+## 2. Astro 7 Content Collections
 
 ### Config Location CHANGED
 
@@ -316,7 +317,7 @@ color: var(--color-red-500);
 # ❌ OLD (Astro 4)
 src/content/config.ts
 
-# ✅ CURRENT (Astro 6)
+# ✅ CURRENT (Astro 7)
 src/content.config.ts
 ```
 
@@ -324,7 +325,8 @@ src/content.config.ts
 
 ```ts
 // src/content.config.ts
-import { defineCollection, z } from 'astro:content';
+import { defineCollection } from 'astro:content';
+import { z } from 'astro/zod';
 import { glob } from 'astro/loaders';
 
 const blog = defineCollection({
@@ -365,13 +367,13 @@ const { Content } = await render(entry);
 
 ### Migration Cheat Sheet
 
-| Legacy Astro | Astro 6 |
+| Legacy Astro | Astro 7 |
 |---|---|
 | `src/content/config.ts` | `src/content.config.ts` |
 | `type: 'content'` | `loader: glob({ pattern: '**/*.md', base: './src/content/blog' })` |
 | `entry.slug` | `entry.id` |
 | `entry.render()` | `import { render } from 'astro:content'; render(entry)` |
-| `import { z } from 'astro:content'` | `import { z } from 'astro:content'` + `import { glob } from 'astro/loaders'` |
+| `import { z } from 'astro:content'` | `import { z } from 'astro/zod'` + `import { glob } from 'astro/loaders'` |
 | `output: 'hybrid'` | `output: 'static'` (merged) |
 | `Astro.glob()` | `getCollection()` |
 
@@ -388,7 +390,7 @@ import heroImage from '../assets/hero.png';
 {/* Local image — auto-optimized (ALWAYS use this) */}
 <Image src={heroImage} alt="Hero" width={800} height={600} />
 
-{/* Responsive layout (Astro 6+) */}
+{/* Responsive layout (Astro 7+) */}
 <Image src={heroImage} alt="Hero" layout="constrained" width={800} height={600} />
 
 {/* Full-width hero */}
@@ -439,7 +441,8 @@ import ContactForm from '@/components/ContactForm';
 
 ```ts
 // src/content.config.ts
-import { defineCollection, z } from 'astro:content';
+import { defineCollection } from 'astro:content';
+import { z } from 'astro/zod';
 import { glob } from 'astro/loaders';
 
 const posts = defineCollection({
@@ -464,10 +467,10 @@ Generated astro-static sites use TinaCMS as the CMS path:
 - `@tinacms/astro` provides React-free visual editing for Astro.
 - Keep `output: "static"` for public pages.
 - Use `@astrojs/node` standalone adapter for on-demand editor routes.
-- `tina/config.ts` mirrors `src/content.config.ts` collection names and fields.
+- `tina/config.ts` mirrors `src/content.config.ts` collection names and fields. Each Tina collection declares `format` explicitly and it matches the seeded file extension (`.md` ↔ `format: 'md'`, `.mdx` ↔ `format: 'mdx'`, `.json` ↔ `format: 'json'`).
 - `tina/config.ts` must use a custom `PasswordAuthProvider` (extending `AbstractAuthProvider` from `tinacms`) — NOT `LocalAuthProvider`. `LocalAuthProvider` only sets a localStorage flag and does not interact with the backend session. The custom provider's `authenticate()` redirects to `/admin/login.html`, `getUser()` probes `/api/tina/auth-check` (GET → 200/401) and returns `false` when unauthorized or a user object with `name`/`email` when authorized, `getToken()` returns `{ id_token: "" }`, and `logout()` calls `/api/tina/logout` then redirects to login. Never return boolean `true` from `getUser()` — Tina reads `user.name` and crashes with `Cannot read properties of undefined (reading 'name')`.
 - Every page/section collection must define `ui.router` so document clicks open the live visual editor route, not just the form editor.
-- Every Tina data loader must wrap generated client queries in `requestWithMetadata()`.
+- Every Tina data loader must wrap generated query results in `requestWithMetadata()`. On SSR/server code, do not call the generated Tina HTTP client with relative `/api/tina/gql`; use the local database client or manually construct `{ data, query, variables }` so Node does not fail URL parsing.
 - Every visible editable DOM node must carry `data-tina-field={tinaField(source, 'fieldName')}`. This is what enables click-to-edit outlines/focus in the preview.
 - For maximum Wix-like editing, model pages as ordered blocks/sections so editors can add, remove, and reorder components within the supported design system. Tina does component/block editing, not freeform canvas dragging.
 - Use `@tinacms/astro/TinaIsland.astro` to wrap editable regions.
@@ -475,11 +478,23 @@ Generated astro-static sites use TinaCMS as the CMS path:
 - Self-host production saves through `@tinacms/datalayer` with `MemoryLevel` (pure JS, no native bindings — Bun can't load `better-sqlite3`), `FilesystemBridge` for file I/O, and a `gitProvider` that writes through the filesystem bridge. Content is indexed in-memory on server start (~1s for small sites).
 - `tinacms build` generates `admin/index.html` and `tina/__generated__/`; do not hand-author generated admin files. **The admin SPA is built locally on the control node (Phase 4.2), NOT on the VPS** — the 2GB VM OOM-kills esbuild. The `admin/` directory is published by build-deployer and served by Caddy from `${SITE_DIR}/admin/`.
 - `tina/config.ts` build config MUST be `{ outputFolder: "admin", publicFolder: "." }` so the admin SPA lands at project root, not inside `dist/client/` (which `astro build` wipes).
+- `tina/config.ts` media config MUST point repo media at `public/images` (`media.tina.publicFolder: 'public'`, `media.tina.mediaRoot: 'images'`). Tina image fields and seeded content must use public paths like `/images/foo.webp`, never raw `src/assets/...` strings.
 - TinaCMS collection `path` values MUST match Astro Content Collection `base` paths exactly (e.g., both `src/content/pages`, not singular/plural mismatched).
 - TinaCMS projects produce SSR output through `@astrojs/node` even when public pages are mostly static. `dist/server/entry.mjs` is valid build output; deployment and smoke tests must not require `dist/client/index.html` when SSR is present.
 - Smoke testing SSR must fetch the live `SITE_URL` while using local `dist/client` for CSS/media existence checks. The canonical contract is `SITE_URL="$SITE_URL" SITE_DIR="$SITE_DIR" bash smoke.sh` from the site root.
 
-Latest compatible baseline as of 2026-06-19: `astro@^6.4.8`, `@astrojs/node@^10.1.4`, `@astrojs/mdx@^6.0.3`, `@astrojs/react@^5.0.7`, `@astrojs/sitemap@^3.7.3`, `@tinacms/astro@^0.5.0`, `tinacms@^3.9.3`, `@tinacms/cli@^2.5.1`, `@tinacms/datalayer@^2.0.25`, `memory-level@^1.0.0`, `tailwindcss@^4.3.1`, `@tailwindcss/vite@^4.3.1`.
+Latest compatible baseline as of 2026-06-23: `astro@^7.0.2`, `@astrojs/node@^11.0.0`, `@astrojs/mdx@^7.0.0`, `@astrojs/react@^6.0.0`, `@astrojs/sitemap@^3.7.3`, `@tinacms/astro@^0.5.0`, `tinacms@^3.9.3`, `@tinacms/cli@^2.5.1`, `@tinacms/datalayer@^2.0.25`, `memory-level@^1.0.0`, `tailwindcss@^4.3.1`, `@tailwindcss/vite@^4.3.1`.
+
+### Astro 7 compatibility guardrails
+
+Astro 7 upgrades the generated-project baseline to Vite 8 and a Rust `.astro` compiler. This improves build speed, but it does not make content editable: Tina field modeling, `requestWithMetadata()`, `TinaIsland`, and `data-tina-field` coverage remain mandatory.
+
+For generated source:
+
+- Do not create `src/fetch.ts` or `src/fetch.js` unless intentionally implementing Astro 7 advanced routing; those names are reserved request-pipeline entrypoints.
+- Keep markup valid. The Rust compiler is stricter about unclosed tags and invalid HTML nesting; do not put block elements inside `<p>`, do not rely on auto-closing, and avoid whitespace-sensitive inline element joins unless you add explicit spaces.
+- Treat Markdown/MDX output as Astro 7/Sätteri-compatible unless a project explicitly needs the legacy unified pipeline.
+- Vite 8/Rolldown should not change the Tina contract, but custom Vite plugins must be checked against Vite 8 compatibility before adding them.
 
 ---
 
@@ -559,10 +574,12 @@ export default defineConfig({
   authProvider: new PasswordAuthProvider(),
   contentApiUrlOverride: '/api/tina/gql',
   build: { outputFolder: 'admin', publicFolder: '.' },
+  media: { tina: { publicFolder: 'public', mediaRoot: 'images', static: false }, accept: ['image/*'] },
   schema: {
     collections: [{
       name: 'sections',
       path: 'src/content/sections',
+      format: 'md',
       ui: { router: ({ document }) => routeForDocument(document) },
       fields: [],
     }],
@@ -639,18 +656,19 @@ This is the canonical pattern for a statically-rendered page backed by a TinaCMS
 ---
 // src/pages/index.astro — canonical Tina-editable static page
 import { getEntry } from 'astro:content';
-import { TinaIsland } from '@tinacms/astro/TinaIsland.astro';
+import TinaIsland from '@tinacms/astro/TinaIsland.astro';
 import { requestWithMetadata, tinaField } from '@tinacms/astro';
-import { client } from '@/tina/__generated__/client';
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import Hero from '@/components/sections/Hero.astro';
 
 // 1. Fetch the content collection entry (Astro Content Collections API)
 const entry = await getEntry('page', 'welcome');
 
-// 2. Fetch the same document via the Tina client (for visual editing metadata)
-const tinaData = await client.requestWithMetadata(
-  (c) => c.page({ relativePath: 'welcome.md' }),
+// 2. Register the same document/query with Tina visual editing metadata.
+// On SSR/server pages, avoid the generated HTTP client with relative /api/tina/gql.
+const PAGE_QUERY = `query page($relativePath: String!) { page(relativePath: $relativePath) { title description } }`;
+const tinaData = await requestWithMetadata(
+  { data: { page: entry.data }, query: PAGE_QUERY, variables: { relativePath: 'welcome.md' } },
   { priority: 'primary' }
 );
 
@@ -695,7 +713,7 @@ const { title, subtitle, titleField, descField } = Astro.props;
 
 **Why both `getEntry()` and `client.requestWithMetadata()`?**
 - `getEntry()` provides the content for SSR/static rendering (Astro Content Collections).
-- `client.requestWithMetadata()` registers the document with TinaCMS so the admin can map form fields to DOM elements. Without it, the edit panel stays empty.
+- `requestWithMetadata()` registers the document with TinaCMS so the admin can map form fields to DOM elements. Without it, the edit panel stays empty.
 - The `priority: 'primary'` option tells the admin to open this document's form on page load.
 
 **For `getStaticPaths` pages (dynamic routes):**
@@ -703,7 +721,7 @@ const { title, subtitle, titleField, descField } = Astro.props;
 ---
 // src/pages/[slug].astro
 import { getCollection } from 'astro:content';
-import { client } from '@/tina/__generated__/client';
+import { requestWithMetadata } from '@tinacms/astro';
 
 export async function getStaticPaths() {
   const pages = await getCollection('page');
@@ -714,15 +732,15 @@ export async function getStaticPaths() {
 }
 
 const { page } = Astro.props;
-const tinaData = await client.requestWithMetadata(
-  (c) => c.page({ relativePath: `${page.id}.md` }),
+const tinaData = await requestWithMetadata(
+  { data: { page: page.data }, query: PAGE_QUERY, variables: { relativePath: `${page.id}.md` } },
   { priority: 'primary' }
 );
 ---
 ```
 
 **Key rules:**
-1. Every page that renders content-collection data MUST call `client.requestWithMetadata()` — this is what makes the admin edit panel populate.
+1. Every page that renders content-collection data MUST call `requestWithMetadata()` — this is what makes the admin edit panel populate.
 2. Every visible editable text/media node MUST carry `data-tina-field={tinaField(...)}`.
 3. Wrap editable regions in `<TinaIsland>` so the admin bridge script loads in the iframe.
 4. `requestWithMetadata` is a no-op outside the admin iframe (static builds) — it only activates when the page is viewed inside the TinaCMS admin preview.
@@ -963,7 +981,8 @@ export default defineConfig({
 Mirror the Tina schema in Zod. Use discriminated unions for block types:
 
 ```ts
-import { defineCollection, z } from 'astro:content';
+import { defineCollection } from 'astro:content';
+import { z } from 'astro/zod';
 import { glob } from 'astro/loaders';
 
 // Block discriminant union — matches tina/config.ts templates

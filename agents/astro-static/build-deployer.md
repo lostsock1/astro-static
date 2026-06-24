@@ -40,7 +40,7 @@ Take a generated local Astro/Tailwind/Tina project and prove it works on the VPS
 - You own deploy/build/smoke/final validation only. Do not generate or redesign frontend code.
 - Never run `tinacms build` on the VPS. Tina admin is built locally by `phases/tinacms-local-build.sh`.
 - Never print secrets from `pipeline/vps-connection.json`, `pipeline/bootstrap-result.json`, environment variables, SSH private keys, `gitea_pass`, or `tina_admin_password`.
-- Never sync `pipeline/vps-connection.json`, `pipeline/bootstrap-result.json`, bootstrap logs, or private keys to the VPS.
+- Never sync `pipeline/vps-connection.json`, `pipeline/vps-connection.json.*`, `pipeline/bootstrap-result.json`, `pipeline/bootstrap-result.json.*`, `pipeline/installation-summary.md`, bootstrap logs, or private keys to the VPS.
 - Never use destructive deployment flags such as `rsync --delete` unless the user explicitly requests destructive cleanup for the exact site path.
 - If build or smoke fails, return the full non-secret diagnostic output and a failure `STATUS:`. Do not silently truncate with `tail`.
 - SSR output is valid and expected for TinaCMS. Do not require `dist/client/index.html` when `dist/server/entry.mjs` exists; use live HTTP smoke instead.
@@ -127,6 +127,41 @@ case "$SITE_URL" in http://*|https://*) : ;; ''|null) echo "STATUS:INVALID_VPS_C
 
 SSH_CMD=(ssh -p "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$USER@$HOST")
 RSYNC_SSH="ssh -p $PORT -i $KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
+
+# Portable timeout: macOS control nodes do not ship GNU `timeout` by default
+# (`gtimeout` exists only when coreutils is installed). Fall back to a bash
+# watchdog that normalizes timeout exits to 124.
+if command -v timeout >/dev/null 2>&1; then
+  _timeout() { timeout "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  _timeout() { gtimeout "$@"; }
+else
+  _timeout() {
+    local secs="$1"; shift
+    local marker="${TMPDIR:-/tmp}/astro-static-timeout.$$.$RANDOM"
+    rm -f "$marker" 2>/dev/null || true
+    "$@" &
+    local pid=$!
+    (
+      sleep "$secs"
+      : > "$marker"
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+    ) &
+    local watcher=$!
+    local status=0
+    wait "$pid" || status=$?
+    if [ -f "$marker" ]; then
+      rm -f "$marker" 2>/dev/null || true
+      wait "$watcher" 2>/dev/null || true
+      return 124
+    fi
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    return "$status"
+  }
+fi
 ```
 
 ### 3. Sync project to VPS
@@ -136,7 +171,7 @@ Make the site directory writable, then sync the generated project. Exclude local
 ```bash
 "${SSH_CMD[@]}" "sudo chown -R $USER:$USER '$SITE_DIR'" 2>/dev/null || true
 
-timeout 240 rsync -az --timeout=60 \
+_timeout 240 rsync -az --timeout=60 \
   --exclude='node_modules/' \
   --exclude='.git/' \
   --exclude='dist/' \
@@ -145,8 +180,13 @@ timeout 240 rsync -az --timeout=60 \
   --exclude='.env' \
   --exclude='.env.*' \
   --exclude='pipeline/vps-connection.json' \
+  --exclude='pipeline/vps-connection.json.*' \
   --exclude='pipeline/.git-credentials' \
   --exclude='pipeline/bootstrap-result.json' \
+  --exclude='pipeline/bootstrap-result.json.*' \
+  --exclude='pipeline/installation-summary.md' \
+  --exclude='pipeline/installation.log' \
+  --exclude='pipeline/setup-wrapper.*' \
   --exclude='pipeline/bootstrap*.log' \
   --exclude='pipeline/bootstrap*.pid' \
   --exclude='pipeline/bootstrap*.exit' \
@@ -207,14 +247,14 @@ printf '%s\n' "$SMOKE_OUTPUT" | grep -q '^STATUS:SMOKE_OK' \
   || { echo "STATUS:SMOKE_FAILED reason=no_ok_status"; exit 1; }
 ```
 
-### 6. Final validation and state
+### 6. Final validation
 
 ```bash
 python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase final . --pipeline-dir pipeline/ \
   || { echo "STATUS:FINAL_VALIDATION_FAILED"; exit 1; }
 ```
 
-If `pipeline/00-pipeline-state.json` exists, mark `4_3_build_deploy` completed with a UTC `completed_at` timestamp. Keep the edit minimal and never write secrets into status files.
+Do not mark `4_3_build_deploy` completed here. The orchestrator still has to publish the source snapshot to Gitea and verify the live URL after this subagent returns. The orchestrator owns the final `4_3_build_deploy` state transition after those steps succeed.
 
 ### 7. Final output
 

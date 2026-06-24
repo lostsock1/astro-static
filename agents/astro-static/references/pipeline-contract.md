@@ -10,13 +10,14 @@ This is the canonical phase graph and status grammar for the astro-static pipeli
 | `1_design_extraction` | local/web | `pipeline/00-brief.json` | `pipeline/00-design-tokens/` when references exist | Skip when no design references are supplied. |
 | `2_research` | local/web | `pipeline/00-brief.json` | `pipeline/01-creative-brief.json` | Produces strategy, content model, recommendations, review flags. |
 | `2_5_brief_validation` | local | `pipeline/01-creative-brief.json` | `pipeline/HUMAN_REVIEW.md` or validation pass | Halts when product/content blockers need human review. |
+| `2_6_tina_blueprint` | local | `pipeline/01-creative-brief.json` | `pipeline/01-tina-blueprint.json` | Deterministic Tina-owned editable content contract. Must pass before asset generation. |
 | `3_asset_generation` | local/API | creative brief, design tokens | `pipeline/02-font-config.json`, `pipeline/02-asset-manifest.json` | Owns identity assets and manifest contract. |
 | `3_5_image_generation` | local/API | asset manifest, image shot list | renderable content images, LQIP files, generated content image index | Optional per shot list; deterministic placeholders are valid fallbacks. |
 | `3_6_video_generation` | local/API | asset manifest, video shot list | generated MP4 backgrounds or explicit skipped/failed manifest entries | Optional; never use MP4 files as poster images. |
 | `3_8_hyperframes_hero_optional` | local | creative brief, assets, font config, theme CSS | `public/videos/hero-intro.mp4` when explicitly enabled | Opt-in; recommendation alone does not enable the phase. |
 | `4_1_frontend_codegen` | local | all content/assets/contracts | Astro/Tailwind/Tina source tree | Local code generation only; no SSH, rsync, remote build, or deploy. |
 | `4_2_tinacms_local_build` | local | generated Tina/Astro source | `admin/`, `tina/__generated__/_schema.json` | Local Tina admin build after codegen. |
-| `4_3_build_deploy` | local → VPS | source tree, admin artifacts, bootstrap result | deployed site, smoke result, final validation | Build-deployer owns join, sync, remote build, smoke, validation. |
+| `4_3_build_deploy` | local → VPS/Gitea | source tree, admin artifacts, bootstrap result | deployed site, smoke result, final validation, Gitea source snapshot | Build-deployer owns join, sync, remote build, smoke, validation; orchestrator then publishes the source snapshot via the canonical Gitea push helper. |
 | `5_publish_result` | local | final validation, deployment metadata | `pipeline/RESULT.md`, final `pipeline/STATUS.md` | Must redact secrets; credentials stay in `pipeline/vps-connection.json` with owner-only permissions. |
 
 ## Phase Status Values
@@ -51,6 +52,8 @@ STATUS:<TOKEN>[ <key>=<value> ...][ <human detail>]
 - No space is allowed after `STATUS:`.
 - `<TOKEN>` is uppercase snake case matching `^[A-Z_][A-Z0-9_]*$`.
 - Non-blocking warnings still use `STATUS:<TOKEN>` with a token such as `GITEA_TCP_PROBE_WARNING`; do not emit `WARN:<TOKEN>` inside the status token.
+
+Blueprint phase scripts may emit: `STATUS:TINA_BLUEPRINT_OK`, `STATUS:TINA_BLUEPRINT_FAILED`, `STATUS:TINA_BLUEPRINT_MISSING_FIELD`, and `STATUS:TINA_BLUEPRINT_UNSUPPORTED_BLOCK`.
 
 ## Secret Handling Contract
 

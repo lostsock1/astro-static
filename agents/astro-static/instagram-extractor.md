@@ -3,24 +3,21 @@ description: Extracts Instagram profile content into astro-static pipeline artif
 mode: subagent
 model: ppq/moonshotai/kimi-k2.6
 temperature: 0.2
-tools:
-  read: true
-  write: true
-  edit: true
-  bash: true
-  glob: true
-  grep: true
-  webfetch: true
-  task: true
 permission:
+  read: allow
+  list: allow
+  glob: allow
+  grep: allow
   edit: allow
   bash: allow
   task:
     search/instagram: allow
     "*": deny
+  skill:
+    "*": deny
   webfetch: allow
   external_directory: allow
-maxSteps: 60
+steps: 60
 ---
 
 > **⚠️ READ-ONLY CONVENTION:** If the prompt starts with `ro`, treat the entire session as READ ONLY. Do NOT write, edit, create, modify, or delete any files or execute any write-side operations — regardless of your configured permissions or tools. Only read, search, and analyze.
@@ -61,7 +58,7 @@ python3 -c "from camoufox import AsyncNewBrowser; print('CAMOUFOX_OK')" 2>&1 || 
 
 ### Step 1: Raw Data Extraction
 
-Dispatch `search/instagram` with the target URL and scope `full`. The agent returns the normalized JSON output contract (profile, posts, OG tags, extraction metadata). Write the raw output to `pipeline/00-instagram/profile.json`.
+Dispatch `search/instagram` with the target URL and scope `full`. The agent returns the normalized JSON output contract (profile, posts, OG tags, extraction metadata). Normalize/wrap that output into the required `00-instagram-extraction.schema.json` envelope before writing `pipeline/00-instagram/profile.json`.
 
 If `search/instagram` fails, abort with `STATUS:IG_EXTRACTION_FAILED` and include the error details. Do not attempt fallback extraction — Instagram requires Camoufox.
 
@@ -71,7 +68,14 @@ From `profile.json`, build a download manifest. The JSON file at `profile.json` 
 
 ```json
 {
+  "schema_version": "astro-static-instagram/v1",
+  "extracted_at": "2026-01-01T00:00:00Z",
+  "source_url": "https://www.instagram.com/example/",
   "profile": {
+    "username": "example",
+    "display_name": "Example Brand",
+    "followers": 0,
+    "posts_count": 0,
     "profile_image_url": "https://scontent-*.cdninstagram.com/...",
     "story_highlights": [{"name": "...", "thumbnail_url": "https://..."}]
   },
@@ -83,7 +87,13 @@ From `profile.json`, build a download manifest. The JSON file at `profile.json` 
       "caption": "...",
       "posted_at": "..."
     }
-  ]
+  ],
+  "extraction_metadata": {
+    "method": "search/instagram",
+    "stealth_used": true,
+    "login_wall_encountered": false,
+    "login_wall_blocked_content": false
+  }
 }
 ```
 
@@ -403,9 +413,9 @@ Write a brief `pipeline/00-instagram/extraction-report.md` covering profile summ
 
 2. **Do not proceed if `search/instagram` fails** — report `STATUS:IG_EXTRACTION_FAILED` and exit. There is no fallback for Instagram extraction.
 
-3. **Validate all JSON output** — after writing any JSON file, verify it parses:
+3. **Validate all JSON output** — after writing `pipeline/00-instagram/profile.json`, validate it against `00-instagram-extraction.schema.json` through the canonical pipeline validator; for secondary JSON artifacts, at minimum verify they parse before continuing:
    ```bash
-   python3 -c "import json; json.load(open('pipeline/00-instagram/<file>.json')); print('OK')"
+   python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase instagram . --pipeline-dir pipeline/
    ```
 
 4. **Report partial successes** — if some images fail to download, mark them in the extraction report but continue with what succeeded. At minimum, the profile image + 3 post thumbnails must succeed for meaningful design analysis.
@@ -436,6 +446,6 @@ Write a brief `pipeline/00-instagram/extraction-report.md` covering profile summ
 
 - **`astro-static/researcher`** — consumes your `brand-signals.json` to inform the creative brief's brand personality, color direction, typography direction, and content structure.
 
-- **`astro-static/asset-generator`** — may use your downloaded images as style references for img-gen prompts, or directly as content images if they're high enough resolution.
+- **`astro-static/asset-generator`** — must prefer your downloaded images as direct content-image sources when the brief has `instagram_use: "both"` or another content/media value; only fall back to PPQ generation or SVG placeholders for shots that cannot be covered by usable scraped photos.
 
 - **`astro-static/orchestrator`** — invokes you indirectly via design-extractor (Phase 1) or researcher (Phase 2). Does not dispatch you directly.

@@ -103,8 +103,8 @@
     },
     "instagram_use": {
       "type": "string",
-      "enum": ["design_reference", "brand_research", "both"],
-      "description": "How to use the Instagram handle: as a design reference (Phase 1), brand research (Phase 2), or both"
+      "enum": ["design_reference", "brand_research", "both", "content", "content_images", "media", "photos"],
+      "description": "How to use the Instagram handle: as a design reference (Phase 1), brand research (Phase 2), content/media source (Phase 3.5/3.6), or multiple roles"
     }
   },
   "additionalProperties": true

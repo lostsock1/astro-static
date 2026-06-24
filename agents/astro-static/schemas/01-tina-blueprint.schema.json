@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/01-tina-blueprint.schema.json",
+  "title": "Astro Static Tina Blueprint",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_name",
+    "settings",
+    "pages",
+    "collections",
+    "blocks",
+    "media_fields",
+    "editable_surface_map"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "astro-static-tina-blueprint/v1"
+    },
+    "project_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "settings": {
+      "$ref": "#/$defs/settings"
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/page"
+      }
+    },
+    "collections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/collection"
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/block"
+      }
+    },
+    "media_fields": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mediaField"
+      }
+    },
+    "editable_surface_map": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/editableSurface"
+      }
+    }
+  },
+  "$defs": {
+    "settings": {
+      "type": "object",
+      "required": ["siteName", "nav", "footerLinks", "copyrightText", "seo"],
+      "properties": {
+        "siteName": { "type": "string", "minLength": 1 },
+        "tagline": { "type": "string" },
+        "nav": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["label", "href"],
+            "properties": {
+              "label": { "type": "string", "minLength": 1 },
+              "href": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": true
+          }
+        },
+        "footerLinks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "href"],
+            "properties": {
+              "label": { "type": "string", "minLength": 1 },
+              "href": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": true
+          }
+        },
+        "socialLinks": { "type": "array" },
+        "contactEmail": { "type": "string" },
+        "copyrightText": { "type": "string", "minLength": 1 },
+        "seo": {
+          "type": "object",
+          "required": ["title", "description"],
+          "properties": {
+            "title": { "type": "string" },
+            "description": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "page": {
+      "type": "object",
+      "required": ["id", "slug", "title", "sections"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "slug": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "seo": { "type": "object" },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/section" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "section": {
+      "type": "object",
+      "required": ["id", "type", "fields"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sectionField" }
+        },
+        "variant": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "sectionField": {
+      "type": "object",
+      "required": ["name", "field_type", "source_default"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "field_type": { "$ref": "#/$defs/fieldType" },
+        "source_default": { "$ref": "#/$defs/jsonValue" },
+        "item_fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sectionField" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "collection": {
+      "type": "object",
+      "required": ["name", "path", "fields"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sectionField" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "block": {
+      "type": "object",
+      "required": ["type", "label", "renderer", "fields"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "renderer": { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": true
+    },
+    "editableSurface": {
+      "type": "object",
+      "required": [
+        "field_ref",
+        "field_type",
+        "owner",
+        "source_default",
+        "tina_field_path",
+        "content_path",
+        "render_intent",
+        "required_marker",
+        "surface_kind"
+      ],
+      "properties": {
+        "field_ref": { "$ref": "#/$defs/fieldRef" },
+        "field_type": { "$ref": "#/$defs/fieldType" },
+        "owner": { "enum": ["settings", "page", "collection", "block"] },
+        "source_default": { "$ref": "#/$defs/jsonValue" },
+        "tina_field_path": { "type": "string", "minLength": 1 },
+        "content_path": { "type": "string", "minLength": 1 },
+        "render_intent": { "type": "string", "minLength": 1 },
+        "required_marker": { "enum": ["data-tina-field", "tina-island", "static-exempt"] },
+        "surface_kind": { "type": "string", "minLength": 1 },
+        "static_exemption_reason": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "required_marker": { "const": "static-exempt" } },
+            "required": ["required_marker"]
+          },
+          "then": { "required": ["static_exemption_reason"] }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "mediaField": {
+      "allOf": [
+        { "$ref": "#/$defs/editableSurface" },
+        {
+          "type": "object",
+          "properties": {
+            "field_type": {
+              "enum": ["image", "video", "file", "object-list"]
+            }
+          }
+        }
+      ]
+    },
+    "fieldRef": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.\\[\\]-]+$"
+    },
+    "fieldType": {
+      "enum": [
+        "string",
+        "text",
+        "rich-text",
+        "image",
+        "video",
+        "file",
+        "url",
+        "boolean",
+        "number",
+        "date",
+        "object",
+        "object-list"
+      ]
+    },
+    "jsonValue": {
+      "type": ["string", "number", "integer", "boolean", "object", "array", "null"]
+    }
+  },
+  "additionalProperties": true
+}

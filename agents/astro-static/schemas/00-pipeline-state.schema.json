@@ -36,6 +36,7 @@
         "1_design_extraction",
         "2_research",
         "2_5_brief_validation",
+        "2_6_tina_blueprint",
         "3_asset_generation",
         "3_5_image_generation",
         "3_6_video_generation",
@@ -56,6 +57,9 @@
           "$ref": "#/$defs/phase"
         },
         "2_5_brief_validation": {
+          "$ref": "#/$defs/phase"
+        },
+        "2_6_tina_blueprint": {
           "$ref": "#/$defs/phase"
         },
         "3_asset_generation": {
@@ -83,7 +87,7 @@
           "$ref": "#/$defs/phase"
         }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   },
   "$defs": {

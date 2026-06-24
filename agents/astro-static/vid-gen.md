@@ -233,12 +233,13 @@ When called by asset-generator for Phase 3.6 (video background generation), enha
 3. Always emphasize slow, subtle motion — backgrounds must not distract from content
 4. Always include "dark overlay friendly" — frontend-builder applies gradient overlays for text readability
 5. Use 5s duration by default (cheaper, loops well). Use 10s only when the brief explicitly requests premium video
+6. If `image_url` points to Instagram-sourced content, this is an image-to-video task: preserve the people/place/product composition from the still, animate with subtle camera movement and atmospheric motion only, and use a verified i2v model from the PPQ library. Do not switch to unrelated text-to-video scenery.
 
 ## Workflow
 
 1. **Parse** the task, prompt, output path, and options from the caller
 2. **Craft** the prompt — enhance with background-specific keywords and brand mood from `pipeline/01-creative-brief.json` if available
-3. **Submit** to the API using the pattern above (default `kling-3.0`; verified fallback model only for retryable provider failures)
+3. **Submit** to the API using the pattern above (default `kling-3.0` for t2v; when `image_url` is present, use image-to-video with a verified i2v model; verified fallback model only for retryable provider failures)
 4. **Poll** every 10 seconds, max 8 minutes
 5. **Download** to the specified output path; verify file is non-empty
 6. **Retry once** on 429/500/502/503 (re-submit); fail immediately on 400/401/403 or repeated failure

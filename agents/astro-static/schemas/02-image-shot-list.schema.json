@@ -30,7 +30,10 @@
         "id",
         "type",
         "prompt",
-        "output_path"
+        "output_path",
+        "field_ref",
+        "content_path",
+        "tina_default_value"
       ],
       "properties": {
         "id": {
@@ -59,7 +62,20 @@
         },
         "output_path": {
           "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))(src/assets|public)/.+$"
+        },
+        "field_ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.\\[\\]-]+$"
+        },
+        "content_path": {
+          "type": "string",
           "minLength": 1
+        },
+        "tina_default_value": {
+          "type": ["string", "null"]
         },
         "dimensions": {
           "type": ["string", "null"],
@@ -77,7 +93,7 @@
         },
         "status": {
           "type": "string",
-          "enum": ["pending", "generated", "failed", "placeholder"]
+          "enum": ["pending", "generated", "failed", "placeholder", "scraped_instagram"]
         },
         "fallback_reason": {
           "type": ["string", "null"]
