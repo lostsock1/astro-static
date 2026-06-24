@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Merge live PPQ API cache + curated metadata → ppq-model-library.md.
+"""Merge live PPQ API cache + curated metadata → ppq-models.md.
 
-Reads JSON cache from validate-ppq-models.sh output (stdin or --cache).
+Reads JSON cache from validate-models.sh output (stdin or --cache).
 Writes curated markdown reference to stdout or --output.
 """
 from __future__ import annotations
@@ -488,7 +488,7 @@ def generate_markdown(cache: dict) -> str:
     lines.append("")
     lines.append(f"Auto-generated from PPQ API. **Queried**: {queried}")
     lines.append("")
-    lines.append("Refresh: `bash ~/.config/opencode/skills/filmmaker/scripts/refresh-model-library.sh [--force]`")
+    lines.append("Refresh: `bash ~/.config/opencode/astro-static/models/refresh-models.sh [--force]`")
     lines.append("")
 
     # ── Quick Reference ──────────────────────────────────────────────

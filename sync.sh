@@ -24,12 +24,15 @@ EXCLUDES=(--exclude=__pycache__/ --exclude=.pytest_cache/ --exclude='*.pyc' --ex
 
 # What this repo owns and where each part installs in OpenCode.
 #   1. agent prompts + schemas + references  (everything under agents/astro-static EXCEPT scripts/)
-#   2. runtime scripts                        (agents/astro-static/scripts/*  ->  sibling runtime dir)
-#   3. slash commands
+#   2. runtime scripts                        (agents/astro-static/scripts/* -> sibling runtime dir;
+#                                              excludes models/ so the toolkit below survives --delete)
+#   3. model toolkit                          (models/* -> the runtime dir's models/ subdir)
+#   4. slash commands
 # Fields: label | SRC (repo) | DST (opencode) | extra rsync excludes
 MAPPINGS=(
   "agent prompts/schemas/refs|$REPO/agents/astro-static/|$OC/agents/astro-static/|--exclude=scripts/"
-  "runtime scripts|$REPO/agents/astro-static/scripts/|$OC/astro-static/|"
+  "runtime scripts|$REPO/agents/astro-static/scripts/|$OC/astro-static/|--exclude=models/"
+  "model toolkit|$REPO/models/|$OC/astro-static/models/|"
   "slash commands|$REPO/commands/astro-static/|$OC/commands/astro-static/|"
 )
 

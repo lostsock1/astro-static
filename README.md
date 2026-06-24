@@ -25,7 +25,7 @@ The pipeline is phase-gated, resumable, and fail-closed. Each major phase emits 
 | Content | Astro Content Collections + Tina collections |
 | Deployment target | Debian 13 VPS, Caddy, Gitea, systemd SSR service |
 | Media generation | PPQ image/video agents with local fallback manifests |
-| Validation | 102 regression tests plus phase/schema checks |
+| Validation | 103 regression tests plus phase/schema checks |
 
 Canonical package ranges are documented in `agents/astro-static/references/reference-stack.md`.
 
@@ -99,17 +99,18 @@ This repository is the single source of truth. There are no duplicated copies;
 │   ├── references/                  # stack, pipeline, and transformation contracts
 │   └── scripts/                     # runtime helpers (validators, setup-vps, phases/)
 ├── commands/astro-static/           # installable OpenCode slash commands
-├── models/                          # PPQ model lookup / media-guard tooling (dev reference)
+├── models/                          # PPQ model-lookup toolkit (installed; used by img/vid agents)
 ├── sync.sh                          # install into / diff against the live OpenCode config
 └── README.md
 ```
 
-`sync.sh` maps the source tree onto the three OpenCode install locations:
+`sync.sh` maps the source tree onto the OpenCode install locations:
 
 | Repo source | Installs to |
 |---|---|
 | `agents/astro-static/` (minus `scripts/`) | `~/.config/opencode/agents/astro-static/` |
 | `agents/astro-static/scripts/` | `~/.config/opencode/astro-static/` |
+| `models/` | `~/.config/opencode/astro-static/models/` |
 | `commands/astro-static/` | `~/.config/opencode/commands/astro-static/` |
 
 The runtime helpers are kept inside `agents/astro-static/scripts/` so the
@@ -142,7 +143,7 @@ python3 agents/astro-static/scripts/test_regressions.py
 Expected output for this stack revision:
 
 ```text
-Ran 102 tests
+Ran 103 tests
 OK
 ```
 

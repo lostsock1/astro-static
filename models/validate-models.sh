@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# validate-ppq-models.sh — Query PPQ API for video/image models + cache validated results
-# Usage: ./validate-ppq-models.sh [--force] [--print]
+# validate-models.sh — Query PPQ API for video/image models + cache validated results
+# Usage: ./validate-models.sh [--force] [--print]
 # Cache: ~/.cache/opencode/ppq-video-models.json (24h TTL)
 
 set -euo pipefail
@@ -39,7 +39,7 @@ mkdir -p "$CACHE_DIR"
 echo "🔍 Querying PPQ API for video/image models..."
 MODELS_JSON=$(curl -s "https://api.ppq.ai/v1/models?type=image,video" -H "Authorization: Bearer $API_KEY")
 
-echo "$MODELS_JSON" | python3 "$SCRIPT_DIR/_parse_ppq_models.py" "$CACHE_FILE"
+echo "$MODELS_JSON" | python3 "$SCRIPT_DIR/_parse_models.py" "$CACHE_FILE"
 
 echo ""
 echo "✅ Cache: $CACHE_FILE"

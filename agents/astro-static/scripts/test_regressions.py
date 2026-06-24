@@ -1954,6 +1954,23 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertFalse([i for i in warn_issues if i.level == "error"])
         self.assertTrue([i for i in warn_issues if i.level == "warning"])
 
+    def test_img_vid_agents_use_self_contained_model_toolkit(self) -> None:
+        for agent in ("img-gen.md", "vid-gen.md"):
+            text = (AGENTS / agent).read_text()
+            self.assertNotIn("skills/filmmaker", text)  # stale, uninstalled path
+            self.assertIn("astro-static/models/model-lookup.sh", text)
+        models_dir = next(
+            (p for p in (ROOT / "models", AGENTS.parent.parent / "models") if p.is_dir()),
+            None,
+        )
+        self.assertIsNotNone(models_dir, "models/ toolkit not found in repo or install layout")
+        lookup = (models_dir / "model-lookup.sh").read_text()
+        for stale in ("refresh-model-library.sh", "validate-ppq-models.sh", "_parse_ppq_models.py"):
+            self.assertNotIn(stale, lookup)
+        refresh = (models_dir / "refresh-models.sh").read_text()
+        self.assertNotIn("validate-ppq-models.sh", refresh)
+        self.assertNotIn("skills/filmmaker", refresh)
+
     def test_push_gitea_excludes_generated_and_secret_paths(self) -> None:
         text = (ROOT / "phases" / "push-gitea.sh").read_text()
         for expected in [

@@ -2,7 +2,7 @@
 
 Auto-generated from PPQ API. **Queried**: 2026-05-13T19:46:01.521661+00:00
 
-Refresh: `bash ~/.config/opencode/skills/filmmaker/scripts/refresh-model-library.sh [--force]`
+Refresh: `bash ~/.config/opencode/astro-static/models/refresh-models.sh [--force]`
 
 ## Quick Reference
 

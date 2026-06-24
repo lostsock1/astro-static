@@ -27,17 +27,17 @@ The film-making pipeline maintains a live PPQ model catalog. You share the same 
 
 **Library files (read-only):**
 - `~/.cache/opencode/ppq-video-models.json` — structured JSON cache (image + video models, pricing, recommendations, warnings). Auto-refreshed <24h.
-- `~/.config/opencode/skills/filmmaker/references/ppq-model-library.md` — curated markdown reference (model details, prompt dialects, gotchas, chains, budget scenarios).
-- `~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh` — CLI lookup tool for quick queries.
+- `~/.config/opencode/astro-static/models/ppq-models.md` — curated markdown reference (model details, prompt dialects, gotchas, chains, budget scenarios).
+- `~/.config/opencode/astro-static/models/model-lookup.sh` — CLI lookup tool for quick queries.
 
 **Pre-flight model validation (do this before every generation session):**
 ```bash
 # Check nano-banana-pro is in the cache and has no blocking known_issues
-bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh info nano-banana-pro
+bash ~/.config/opencode/astro-static/models/model-lookup.sh info nano-banana-pro
 # Quick check: cheapest t2i (should return gpt-image-2 at $0.0115)
-bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh cheapest t2i
+bash ~/.config/opencode/astro-static/models/model-lookup.sh cheapest t2i
 # If cache is missing or stale (>24h), refresh:
-# bash ~/.config/opencode/skills/filmmaker/scripts/refresh-model-library.sh --force
+# bash ~/.config/opencode/astro-static/models/refresh-models.sh --force
 ```
 
 **Image model fallback ladder** (if `nano-banana-pro` fails with 429/500/502/503 after retry):
@@ -49,7 +49,7 @@ bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh cheapest t2i
 
 Never hardcode fallback model names — verify against the cache first:
 ```bash
-bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh info nano-banana-2
+bash ~/.config/opencode/astro-static/models/model-lookup.sh info nano-banana-2
 ```
 
 **Always report the model used** in the return format, whether the primary or a fallback.

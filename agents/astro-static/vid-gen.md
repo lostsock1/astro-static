@@ -28,19 +28,19 @@ The film-making pipeline maintains a live PPQ model catalog. You share the same 
 
 **Library files (read-only):**
 - `~/.cache/opencode/ppq-video-models.json` — structured JSON cache (video models, i2v models, pricing, recommendations, warnings). Auto-refreshed <24h.
-- `~/.config/opencode/skills/filmmaker/references/ppq-model-library.md` — curated markdown reference (model details, prompt dialects, gotchas, t2i→i2v chains, budget scenarios, capability matrix).
-- `~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh` — CLI lookup tool for quick queries.
+- `~/.config/opencode/astro-static/models/ppq-models.md` — curated markdown reference (model details, prompt dialects, gotchas, t2i→i2v chains, budget scenarios, capability matrix).
+- `~/.config/opencode/astro-static/models/model-lookup.sh` — CLI lookup tool for quick queries.
 
 **Pre-flight model validation (do this before every generation session):**
 ```bash
 # Check kling-3.0 is in the cache, recommended, and has no blocking known_issues
-bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh info kling-3.0
+bash ~/.config/opencode/astro-static/models/model-lookup.sh info kling-3.0
 # Quick check: cheapest t2v (should return runway-gen4 at $0.069)
-bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh cheapest t2v
+bash ~/.config/opencode/astro-static/models/model-lookup.sh cheapest t2v
 # Show recommended t2i→i2v chains (relevant when image_url is provided)
-bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh show chains
+bash ~/.config/opencode/astro-static/models/model-lookup.sh show chains
 # If cache is missing or stale (>24h), refresh:
-# bash ~/.config/opencode/skills/filmmaker/scripts/refresh-model-library.sh --force
+# bash ~/.config/opencode/astro-static/models/refresh-models.sh --force
 ```
 
 **Video model fallback ladder** (if `kling-3.0` fails with 429/500/502/503 after retry):
@@ -58,7 +58,7 @@ bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh show chains
 
 Never hardcode fallback model names — verify against the cache first:
 ```bash
-bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh info kling-2.5-turbo
+bash ~/.config/opencode/astro-static/models/model-lookup.sh info kling-2.5-turbo
 ```
 
 **i2v chain awareness** (when `image_url` is provided in the task):
@@ -71,7 +71,7 @@ The recommended chains from the library:
 
 If the task provides an `image_url`, you are in i2v mode — use a dedicated i2v model (not kling-3.0 t2v). Check the cache for available i2v models:
 ```bash
-bash ~/.config/opencode/skills/filmmaker/scripts/model-lookup.sh show i2v
+bash ~/.config/opencode/astro-static/models/model-lookup.sh show i2v
 ```
 
 **Always report the model used** in the return format, whether the primary or a fallback.

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# refresh-model-library.sh — Refresh PPQ model library (JSON cache + markdown reference)
-# Usage: refresh-model-library.sh [--force] [--print]
+# refresh-models.sh — Refresh PPQ model library (JSON cache + markdown reference)
+# Usage: refresh-models.sh [--force] [--print]
 #
 # Called automatically by film-maker pre-flight. No-ops if <24h old.
 #
 # Output:
 #   ~/.cache/opencode/ppq-video-models.json   (JSON cache from API)
-#   ~/.config/opencode/skills/filmmaker/references/ppq-model-library.md  (curated reference)
+#   ~/.config/opencode/astro-static/models/ppq-models.md  (curated reference)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CACHE_FILE="$HOME/.cache/opencode/ppq-video-models.json"
-MD_FILE="$SCRIPT_DIR/../references/ppq-model-library.md"
+MD_FILE="$SCRIPT_DIR/ppq-models.md"
 FORCE=false
 PRINT_ONLY=false
 
@@ -27,7 +27,7 @@ if [ "$PRINT_ONLY" = true ]; then
   if [ -f "$MD_FILE" ]; then
     cat "$MD_FILE"
   else
-    echo "❌ No library. Run: refresh-model-library.sh" >&2
+    echo "❌ No library. Run: refresh-models.sh" >&2
     exit 1
   fi
   exit 0
@@ -53,9 +53,9 @@ if [ "$FORCE" != true ] && [ "$cache_fresh" = true ] && [ "$md_fresh" = true ]; 
   exit 0
 fi
 
-# Step 1: Refresh JSON cache (calls existing validate-ppq-models.sh)
+# Step 1: Refresh JSON cache (calls existing validate-models.sh)
 echo "🔄 Refreshing PPQ model cache..."
-bash "$SCRIPT_DIR/validate-ppq-models.sh" ${FORCE:+--force}
+bash "$SCRIPT_DIR/validate-models.sh" ${FORCE:+--force}
 
 if [ ! -f "$CACHE_FILE" ]; then
   echo "❌ Cache not found after refresh: $CACHE_FILE" >&2

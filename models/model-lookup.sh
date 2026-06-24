@@ -20,15 +20,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CACHE_FILE="$HOME/.cache/opencode/ppq-video-models.json"
-MD_FILE="$SCRIPT_DIR/../references/ppq-model-library.md"
+MD_FILE="$SCRIPT_DIR/ppq-models.md"
 
 # Ensure cache exists
 if [ ! -f "$CACHE_FILE" ]; then
-  bash "$SCRIPT_DIR/refresh-model-library.sh" 2>/dev/null || true
+  bash "$SCRIPT_DIR/refresh-models.sh" 2>/dev/null || true
 fi
 
 if [ ! -f "$CACHE_FILE" ]; then
-  echo "❌ No cache. Set PPQ_API_KEY and run: refresh-model-library.sh" >&2
+  echo "❌ No cache. Set PPQ_API_KEY and run: refresh-models.sh" >&2
   exit 1
 fi
 
@@ -170,7 +170,7 @@ case "$cmd" in
     ;;
 
   refresh)
-    bash "$SCRIPT_DIR/refresh-model-library.sh" --force
+    bash "$SCRIPT_DIR/refresh-models.sh" --force
     ;;
 
   help|--help|-h)
