@@ -75,7 +75,7 @@ case "$cmd" in
     case "$what" in
       video)
         cat "$CACHE_FILE" | jq -r '
-          .video_models | to_entries[] | sort_by(.key)
+          .video_models | to_entries | sort_by(.key) | .[]
           | "\(.key) | \(.value.name) | recommended=\(.value.recommended) | issues=\(.value.known_issues | length)"
         ' | column -t -s'|'
         ;;

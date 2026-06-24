@@ -1967,6 +1967,7 @@ class AstroStaticRegressionTests(unittest.TestCase):
         lookup = (models_dir / "model-lookup.sh").read_text()
         for stale in ("refresh-model-library.sh", "validate-ppq-models.sh", "_parse_ppq_models.py"):
             self.assertNotIn(stale, lookup)
+        self.assertNotIn("to_entries[] | sort_by", lookup)  # jq antipattern: sort_by after [] flatten errors
         refresh = (models_dir / "refresh-models.sh").read_text()
         self.assertNotIn("validate-ppq-models.sh", refresh)
         self.assertNotIn("skills/filmmaker", refresh)
