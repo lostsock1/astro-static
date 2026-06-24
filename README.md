@@ -88,27 +88,33 @@ Canonical phase IDs are stable and should not be renamed without updating schema
 
 ## Repository layout
 
+This repository is the single source of truth. There are no duplicated copies;
+`sync.sh` installs each part into its OpenCode location.
+
 ```text
 .
-├── agents/astro-static/             # OpenCode agent prompts, schemas, references, scripts snapshot
+├── agents/astro-static/             # canonical source for the agent stack
 │   ├── *.md                         # orchestrator and subagent definitions
 │   ├── schemas/                     # pipeline artifact schemas
 │   ├── references/                  # stack, pipeline, and transformation contracts
-│   └── scripts/                     # versioned runtime helpers
-├── commands/                        # compatibility slash-command prompts
-│   └── astro-static/                # installable OpenCode command path
-├── scripts/                         # installable helper copy
-│   ├── phases/                      # phase scripts, including tina-blueprint.py
-│   ├── validate-pipeline.py
-│   └── test_regressions.py
-├── phases/                          # compatibility helper copy for older installs
-├── models/                          # model lookup and PPQ media guard helpers
-├── setup-vps.sh                     # compatibility wrapper/copy
-├── validate-pipeline.py             # compatibility wrapper/copy
-└── test_regressions.py              # compatibility wrapper/copy
+│   └── scripts/                     # runtime helpers (validators, setup-vps, phases/)
+├── commands/astro-static/           # installable OpenCode slash commands
+├── models/                          # PPQ model lookup / media-guard tooling (dev reference)
+├── sync.sh                          # install into / diff against the live OpenCode config
+└── README.md
 ```
 
-The duplicated root/`phases` helper copies are retained for compatibility with existing installs. Keep them synchronized with `scripts/` when changing runtime behavior.
+`sync.sh` maps the source tree onto the three OpenCode install locations:
+
+| Repo source | Installs to |
+|---|---|
+| `agents/astro-static/` (minus `scripts/`) | `~/.config/opencode/agents/astro-static/` |
+| `agents/astro-static/scripts/` | `~/.config/opencode/astro-static/` |
+| `commands/astro-static/` | `~/.config/opencode/commands/astro-static/` |
+
+The runtime helpers are kept inside `agents/astro-static/scripts/` so the
+validator and regression suite resolve their schemas the same way whether run
+from this repo or from the installed location.
 
 ## Validation and guardrails
 
@@ -130,7 +136,7 @@ The validator rejects unsafe or incomplete generated sites, including:
 Run the regression suite:
 
 ```bash
-python3 scripts/test_regressions.py
+python3 agents/astro-static/scripts/test_regressions.py
 ```
 
 Expected output for this stack revision:
@@ -143,27 +149,27 @@ OK
 Additional syntax checks used before publishing:
 
 ```bash
-python3 -m py_compile scripts/validate-pipeline.py scripts/test_regressions.py scripts/phases/tina-blueprint.py
-bash -n scripts/setup-vps.sh
-bash -n scripts/bg-bootstrap.sh
-bash -n scripts/phases/asset-fallbacks.sh
-bash -n scripts/phases/bootstrap-join.sh
-bash -n scripts/phases/ppq-auth.sh
-bash -n scripts/phases/push-gitea.sh
-bash -n scripts/phases/retry.sh
-bash -n scripts/phases/smoke.sh
-bash -n scripts/phases/tinacms-local-build.sh
+S=agents/astro-static/scripts
+python3 -m py_compile $S/validate-pipeline.py $S/test_regressions.py $S/phases/tina-blueprint.py
+bash -n $S/setup-vps.sh
+bash -n $S/bg-bootstrap.sh
+for p in asset-fallbacks bootstrap-join ppq-auth push-gitea retry smoke tinacms-local-build; do
+  bash -n "$S/phases/$p.sh"
+done
 ```
 
 ## Installation into local OpenCode config
 
-Install or update the stack by syncing the repository contents into the OpenCode config locations used by this profile:
+Install or update the live OpenCode stack from this repo with the sync script:
 
-```text
-~/.config/opencode/agents/astro-static/
-~/.config/opencode/commands/astro-static/
-~/.config/opencode/astro-static/
+```bash
+./sync.sh install     # copy repo -> the three ~/.config/opencode locations
+./sync.sh status      # show any drift between repo and live install
+./sync.sh pull        # rescue edits made directly under ~/.config/opencode
 ```
+
+The authoring loop is: edit here → `./sync.sh install` → test in OpenCode →
+`git commit` → `git push`. Override the target with `OPENCODE_CONFIG_DIR=...`.
 
 Do not copy pipeline project secrets, VPS connection files, OpenCode auth files, SSH keys, or PPQ credentials into this repository.
 
@@ -171,6 +177,6 @@ Do not copy pipeline project secrets, VPS connection files, OpenCode auth files,
 
 - Treat schemas, validators, agent prompts, references, and regression tests as one contract.
 - When adding a phase or artifact, update `references/pipeline-contract.md`, schemas, validator logic, tests, and README together.
-- Keep `scripts/`, root helper copies, and `phases/` synchronized.
+- Edit only under `agents/astro-static/` and `commands/astro-static/`; run `./sync.sh install` to deploy. Never edit the live `~/.config/opencode` copies directly.
 - Keep generated project media editable by carrying `field_ref`, `content_path`, and Tina default metadata through the asset pipeline.
 - Never print or commit secrets from `pipeline/vps-connection.json`, bootstrap logs, OpenCode auth, SSH keys, or PPQ credentials.

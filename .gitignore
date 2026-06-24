@@ -1,0 +1,14 @@
+# Python caches from running the validator / regression suite
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Never commit project secrets or local pipeline state if a run happens in-tree
+pipeline/vps-connection.json
+pipeline/bootstrap-result.json
+pipeline/.git-credentials
+pipeline/installation*.md
+pipeline/installation.log
