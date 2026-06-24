@@ -877,8 +877,28 @@ def validate_secret_permissions(artifact_path: Path, artifact_name: str, issues:
         ))
 
 
+def _version_floor(spec: str) -> tuple[int, int, int] | None:
+    """Lowest concrete x.y.z a specifier permits (^7.0.2, ~7.0.2, >=7.0.2, 7.0.2),
+    or None when unparseable (e.g. 'latest', '*', git/workspace URLs)."""
+    match = re.search(r'(\d+)\.(\d+)\.(\d+)', spec or '')
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _caret_line(floor: tuple[int, int, int]) -> tuple[int, ...]:
+    """Caret-compatible release line: the major for >=1.0.0, but (0, minor) for
+    0.x where npm treats a minor bump as breaking."""
+    major, minor, _patch = floor
+    return (major,) if major > 0 else (0, minor)
+
+
 def validate_package_matrix(deps: dict[str, Any], issues: list[Issue]) -> None:
-    """Keep generated projects pinned to the pipeline's tested Astro/Tina stack."""
+    """Keep generated projects on the tested release line, at or above the tested
+    floor. The canonical ranges are caret floors (e.g. ^7.0.2): accept the exact
+    tested range or any newer specifier on the same caret-compatible line; reject
+    downgrades below the floor and jumps to a different line. Unparseable
+    specifiers are non-fatal warnings since they can't be checked."""
     for package_name, expected_range in CANONICAL_PACKAGE_RANGES.items():
         actual = deps.get(package_name)
         if actual is None:
@@ -886,10 +906,28 @@ def validate_package_matrix(deps: dict[str, Any], issues: list[Issue]) -> None:
                 'error', 'package.json',
                 f'missing canonical dependency {package_name}@{expected_range}',
             ))
-        elif actual != expected_range:
+            continue
+        if actual == expected_range:
+            continue
+        expected_floor = _version_floor(expected_range)
+        actual_floor = _version_floor(actual)
+        if actual_floor is None:
+            issues.append(Issue(
+                'warning', 'package.json',
+                f'{package_name} version {actual!r} is unverifiable against tested range {expected_range}',
+            ))
+            continue
+        if expected_floor is None:
+            continue
+        if _caret_line(actual_floor) != _caret_line(expected_floor):
             issues.append(Issue(
                 'error', 'package.json',
-                f'{package_name} must use tested range {expected_range}, got {actual!r}',
+                f'{package_name} must stay on the tested {expected_range} release line, got {actual!r}',
+            ))
+        elif actual_floor < expected_floor:
+            issues.append(Issue(
+                'error', 'package.json',
+                f'{package_name} must be at least the tested {expected_range}, got {actual!r}',
             ))
 
 

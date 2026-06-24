@@ -1920,6 +1920,40 @@ class AstroStaticRegressionTests(unittest.TestCase):
             self.assertIn('ppq-auth.sh', text)
             self.assertIn('PPQ_API_KEY_SOURCE', text)
 
+    def test_package_matrix_accepts_newer_rejects_downgrade_and_major(self) -> None:
+        module = self._load_validate_pipeline_module()
+
+        def errors_for(overrides: dict) -> list:
+            deps = dict(module.CANONICAL_PACKAGE_RANGES)
+            deps.update(overrides)
+            issues: list = []
+            module.validate_package_matrix(deps, issues)
+            return [i for i in issues if i.level == "error"]
+
+        # exact tested ranges pass
+        self.assertEqual(errors_for({}), [])
+        # newer patch/minor on the same release line is accepted
+        self.assertEqual(errors_for({"astro": "^7.1.5"}), [])
+        # downgrade below the tested floor is rejected
+        self.assertTrue(errors_for({"astro": "^7.0.1"}))
+        # a different major is rejected
+        self.assertTrue(errors_for({"astro": "^8.0.0"}))
+        # 0.x packages are locked to the tested minor (caret-incompatible bump rejected)
+        self.assertTrue(errors_for({"@tinacms/astro": "^0.6.0"}))
+        # a missing canonical dependency is still rejected
+        missing_deps = dict(module.CANONICAL_PACKAGE_RANGES)
+        del missing_deps["astro"]
+        missing_issues: list = []
+        module.validate_package_matrix(missing_deps, missing_issues)
+        self.assertTrue([i for i in missing_issues if i.level == "error"])
+        # unparseable specifiers warn but do not fail the build
+        warn_deps = dict(module.CANONICAL_PACKAGE_RANGES)
+        warn_deps["astro"] = "latest"
+        warn_issues: list = []
+        module.validate_package_matrix(warn_deps, warn_issues)
+        self.assertFalse([i for i in warn_issues if i.level == "error"])
+        self.assertTrue([i for i in warn_issues if i.level == "warning"])
+
     def test_push_gitea_excludes_generated_and_secret_paths(self) -> None:
         text = (ROOT / "phases" / "push-gitea.sh").read_text()
         for expected in [

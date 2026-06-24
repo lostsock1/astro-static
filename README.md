@@ -25,7 +25,7 @@ The pipeline is phase-gated, resumable, and fail-closed. Each major phase emits 
 | Content | Astro Content Collections + Tina collections |
 | Deployment target | Debian 13 VPS, Caddy, Gitea, systemd SSR service |
 | Media generation | PPQ image/video agents with local fallback manifests |
-| Validation | 101 regression tests plus phase/schema checks |
+| Validation | 102 regression tests plus phase/schema checks |
 
 Canonical package ranges are documented in `agents/astro-static/references/reference-stack.md`.
 
@@ -142,7 +142,7 @@ python3 agents/astro-static/scripts/test_regressions.py
 Expected output for this stack revision:
 
 ```text
-Ran 101 tests
+Ran 102 tests
 OK
 ```
 
