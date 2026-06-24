@@ -19,8 +19,8 @@ You MUST take the user's requested changes, bind them to the correct astro-stati
 
 1. Determine the project root:
    - Prefer the current directory if it already contains `pipeline/00-brief.json` or `pipeline/vps-connection.json`.
-   - Otherwise ask which project to edit and use `/Users/djesys/SITES/<project_name>`.
-   - The local pipeline directory is always `/Users/djesys/SITES/<project_name>/pipeline`.
+   - Otherwise ask which project to edit and use `$HOME/SITES/<project_name>`.
+   - The local pipeline directory is always `$HOME/SITES/<project_name>/pipeline`.
 2. Read the current pipeline state and artifacts before making changes:
    - `pipeline/00-brief.json`
    - `pipeline/01-creative-brief.json` if present

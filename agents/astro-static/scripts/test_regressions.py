@@ -1911,8 +1911,9 @@ class AstroStaticRegressionTests(unittest.TestCase):
         helper = ROOT / "phases" / "ppq-auth.sh"
         self.assertTrue(helper.is_file())
         helper_text = helper.read_text()
-        self.assertIn('/Users/djesys/.local/share/opencode/auth.json', helper_text)
-        self.assertIn('/Users/djesys/.config/opencode/opencode.json', helper_text)
+        self.assertIn('.local/share/opencode/auth.json', helper_text)
+        self.assertIn('.config/opencode/opencode.json', helper_text)
+        self.assertNotIn(str(Path.home()), helper_text)  # no machine-specific home path baked in
         self.assertIn('STATUS:MISSING_PPQ_API_KEY', helper_text)
         for agent in ["img-gen.md", "vid-gen.md", "asset-generator.md"]:
             text = (AGENTS / agent).read_text()

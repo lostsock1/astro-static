@@ -8,8 +8,8 @@
 #
 # Resolution order:
 #   1. Existing PPQ_API_KEY environment variable
-#   2. OpenCode auth store: /Users/djesys/.local/share/opencode/auth.json
-#   3. OpenCode config: /Users/djesys/.config/opencode/opencode.json
+#   2. OpenCode auth store: ~/.local/share/opencode/auth.json
+#   3. OpenCode config: ~/.config/opencode/opencode.json
 #
 # The key is exported into the current shell only. This helper never echoes the
 # token value; status output includes only the credential source label.
@@ -32,8 +32,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-AUTH_PATH = Path('/Users/djesys/.local/share/opencode/auth.json')
-CONFIG_PATH = Path('/Users/djesys/.config/opencode/opencode.json')
+AUTH_PATH = Path.home() / '.local/share/opencode/auth.json'
+CONFIG_PATH = Path.home() / '.config/opencode/opencode.json'
 
 
 def strip_jsonc(text: str) -> str:

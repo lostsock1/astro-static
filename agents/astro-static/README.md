@@ -18,7 +18,7 @@ a local-control-node workflow that generates, deploys, and validates Astro 7 / T
 Runtime shell helpers and validators live outside this agents repo at:
 
 ```text
-/Users/djesys/.config/opencode/astro-static/
+$HOME/.config/opencode/astro-static/
 ```
 
 Those helpers are part of the global astro-static stack. This repository keeps a versioned copy under `scripts/`; sync it to the global runtime path when installing or updating the local OpenCode stack.
@@ -85,18 +85,18 @@ The stack is hardened around failures found in live pipeline runs:
 Run the regression suite from anywhere:
 
 ```bash
-python3 /Users/djesys/.config/opencode/astro-static/test_regressions.py
+python3 $HOME/.config/opencode/astro-static/test_regressions.py
 ```
 
 Run shell syntax checks for the global support scripts:
 
 ```bash
-bash -n /Users/djesys/.config/opencode/astro-static/setup-vps.sh
-bash -n /Users/djesys/.config/opencode/astro-static/phases/smoke.sh
-bash -n /Users/djesys/.config/opencode/astro-static/phases/push-gitea.sh
-bash -n /Users/djesys/.config/opencode/astro-static/phases/tinacms-local-build.sh
-bash -n /Users/djesys/.config/opencode/astro-static/phases/ppq-auth.sh
-python3 /Users/djesys/.config/opencode/astro-static/phases/tina-blueprint.py validate --pipeline-dir pipeline/
+bash -n $HOME/.config/opencode/astro-static/setup-vps.sh
+bash -n $HOME/.config/opencode/astro-static/phases/smoke.sh
+bash -n $HOME/.config/opencode/astro-static/phases/push-gitea.sh
+bash -n $HOME/.config/opencode/astro-static/phases/tinacms-local-build.sh
+bash -n $HOME/.config/opencode/astro-static/phases/ppq-auth.sh
+python3 $HOME/.config/opencode/astro-static/phases/tina-blueprint.py validate --pipeline-dir pipeline/
 ```
 
 Expected regression output at this stack revision:

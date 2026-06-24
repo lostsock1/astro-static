@@ -48,7 +48,7 @@ Take a generated local Astro/Tailwind/Tina project and prove it works on the VPS
 
 ## Required Inputs
 
-Run from the local project root, usually `/Users/djesys/SITES/<project_name>`.
+Run from the local project root, usually `$HOME/SITES/<project_name>`.
 
 Required local files/directories:
 

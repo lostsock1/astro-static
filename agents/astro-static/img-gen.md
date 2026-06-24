@@ -77,7 +77,7 @@ source ~/.config/opencode/astro-static/phases/ppq-auth.sh
 ppq_require_api_key || exit 1
 echo "PPQ credential source: ${PPQ_API_KEY_SOURCE}" >&2
 ```
-The helper first honors `PPQ_API_KEY`, then reads OpenCode's PPQ credentials from `/Users/djesys/.local/share/opencode/auth.json` and `/Users/djesys/.config/opencode/opencode.json`. If no key is found, it emits `STATUS:MISSING_PPQ_API_KEY` and returns non-zero. Never print the key value.
+The helper first honors `PPQ_API_KEY`, then reads OpenCode's PPQ credentials from `$HOME/.local/share/opencode/auth.json` and `$HOME/.config/opencode/opencode.json`. If no key is found, it emits `STATUS:MISSING_PPQ_API_KEY` and returns non-zero. Never print the key value.
 
 ## API Call Pattern
 

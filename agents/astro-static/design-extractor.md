@@ -44,7 +44,7 @@ You run on **kimi-k2.6**, a multimodal model that can analyze images. Use this f
 
 The orchestrator provides:
 - A list of reference URLs (prefer `pipeline/00-brief.json.reference_urls`; also accept `competitor_urls` and legacy `design_references.reference_sites`)
-- The local project working directory (typically `/Users/djesys/SITES/<project-name>`)
+- The local project working directory (typically `$HOME/SITES/<project-name>`)
 
 ## Output Directory
 

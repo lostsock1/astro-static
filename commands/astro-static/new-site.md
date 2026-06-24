@@ -20,8 +20,8 @@ You MUST turn the user's seed request into a valid astro-static project workspac
 1. Treat the user's text as seed input only. Ask for missing details one group at a time.
 2. Determine the project root:
    - If the current directory already contains `pipeline/00-brief.json`, `pipeline/vps-connection.json`, or `pipeline/00-pipeline-state.json`, use it.
-   - Otherwise derive or confirm `project_name` and work in `/Users/djesys/SITES/<project_name>`.
-   - The local pipeline directory is always `/Users/djesys/SITES/<project_name>/pipeline`.
+   - Otherwise derive or confirm `project_name` and work in `$HOME/SITES/<project_name>`.
+   - The local pipeline directory is always `$HOME/SITES/<project_name>/pipeline`.
 3. Collect the minimum startup data before launching the pipeline:
    - VPS connection: `ssh_host`, `ssh_port`, `ssh_user`, `ssh_key`
    - Project identity: `project_name`, `client_name`, `site_type`

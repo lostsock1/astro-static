@@ -17,8 +17,8 @@ $ARGUMENTS
 You MUST bind a new domain to an existing astro-static project by updating the local project metadata, applying the appropriate VPS-side configuration safely, validating the result, and reporting the final site and repo URLs.
 </objective>
 
-1. Determine the project root from the current directory or ask the user to choose an existing project under `/Users/djesys/SITES/`.
-   - The local pipeline directory is always `/Users/djesys/SITES/<project_name>/pipeline`.
+1. Determine the project root from the current directory or ask the user to choose an existing project under `$HOME/SITES/`.
+   - The local pipeline directory is always `$HOME/SITES/<project_name>/pipeline`.
 2. Read `pipeline/vps-connection.json` first and preserve its existing SSH and project settings.
 3. Ask for any missing domain inputs one group at a time:
    - base domain

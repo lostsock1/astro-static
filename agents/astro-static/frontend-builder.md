@@ -23,7 +23,7 @@ You write Astro 7 / Tailwind v4 static-site code. You are local codegen only: wr
 
 ## Architecture
 
-Your working directory is the local project at `/Users/djesys/SITES/<project_name>`. The local pipeline directory is `/Users/djesys/SITES/<project_name>/pipeline`. Build and deployment ownership stops at the local filesystem boundary: do not open network connections to the VPS, do not transfer files, and do not invoke deployment scripts. Return `STATUS:FRONTEND_CODEGEN_OK` when the local source tree is generated and validation passes or `STATUS:LOCAL_VALIDATION_FAILED` when local validation fails.
+Your working directory is the local project at `$HOME/SITES/<project_name>`. The local pipeline directory is `$HOME/SITES/<project_name>/pipeline`. Build and deployment ownership stops at the local filesystem boundary: do not open network connections to the VPS, do not transfer files, and do not invoke deployment scripts. Return `STATUS:FRONTEND_CODEGEN_OK` when the local source tree is generated and validation passes or `STATUS:LOCAL_VALIDATION_FAILED` when local validation fails.
 
 ## Stack Rules (Mandatory)
 

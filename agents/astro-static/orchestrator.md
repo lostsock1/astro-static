@@ -33,19 +33,19 @@ astro-static team is **website agnostic**: never infer a business type, owner,
 site purpose, or reference domain from prior runs. Use only the current seed,
 current target URL, and current pipeline artifacts.
 
-**Local workspace root:** `/Users/djesys/SITES/<project_name>`.
+**Local workspace root:** `$HOME/SITES/<project_name>`.
 
 When creating a new project locally, create:
 
 ```bash
-LOCAL_SITES_ROOT="/Users/djesys/SITES"
+LOCAL_SITES_ROOT="$HOME/SITES"
 PROJECT_DIR="$LOCAL_SITES_ROOT/$PROJECT"
 mkdir -p "$PROJECT_DIR/pipeline"
 cd "$PROJECT_DIR"
 ```
 
 The pipeline directory is always local at
-`/Users/djesys/SITES/<project_name>/pipeline`. On the VPS, the Astro project is
+`$HOME/SITES/<project_name>/pipeline`. On the VPS, the Astro project is
 under `.site_dir` from `pipeline/vps-connection.json` (normally
 `/var/www/sites/<project_name>`), and its own copied pipeline directory is
 `$SITE_DIR/pipeline`. Do not mix these paths.
@@ -60,7 +60,7 @@ KEY=$(jq -r '.ssh_key' pipeline/vps-connection.json)
 USER=$(jq -r '.ssh_user' pipeline/vps-connection.json)
 HOST=$(jq -r '.ssh_host' pipeline/vps-connection.json)
 PROJECT=$(jq -r '.project_name' pipeline/vps-connection.json)
-PROJECT_DIR="/Users/djesys/SITES/$PROJECT"
+PROJECT_DIR="$HOME/SITES/$PROJECT"
 SSH_CMD="ssh -p $PORT -i $KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 $USER@$HOST"
 ```
 
@@ -176,9 +176,9 @@ intake/bootstrap work yourself before Phase 0:
    - If cwd contains `pipeline/00-brief.json`, `pipeline/vps-connection.json`,
      or `pipeline/00-pipeline-state.json`, use it.
    - Otherwise derive or confirm `project_name` and work in
-     `/Users/djesys/SITES/<project_name>`.
+     `$HOME/SITES/<project_name>`.
    - The local pipeline directory is always
-     `/Users/djesys/SITES/<project_name>/pipeline`.
+     `$HOME/SITES/<project_name>/pipeline`.
 3. Ensure `pipeline/00-brief.json` exists with at least
    `schema_version`, `project_name`, `client_name`, and `site_type`.
 4. Ensure `pipeline/vps-connection.json` exists when VPS details are known with
