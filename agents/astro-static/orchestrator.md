@@ -932,7 +932,18 @@ Mark `4_3_build_deploy.status = "completed"` only after build-deployer returns `
 
 ### Phase 5: Publish Result
 
-Phase 5 is a publication/handoff phase. It writes `pipeline/RESULT.md`, finalizes `pipeline/STATUS.md`, and marks `5_publish_result` completed. It does not deploy, rebuild, rsync, push, or change VPS state. Phase 4.3 has already joined bootstrap, synced the project, run the remote build, smoked the live site, published the source snapshot to Gitea, and performed strict final validation.
+Phase 5 is the publication/handoff phase. It compiles the run's outcome, writes `pipeline/RESULT.md`, finalizes `pipeline/STATUS.md`, and marks `5_publish_result` completed. It does not deploy, rebuild, rsync, push, or change VPS state — Phase 4.3 already joined bootstrap, synced, built, smoked the live site, pushed the Gitea snapshot, and ran strict final validation.
+
+**Step 1 — Compile the generation report.** Consolidate the [Generation Issue Ledger](#generation-issue-ledger) (`pipeline/generation-report.md`) with `pipeline/retry.log`, the validator's final warnings, and `pipeline/installation-summary.md` into one deduped, severity-sorted list of every problem, bug, gap, and inefficiency encountered across the whole generation. Keep it secret-free. If nothing went wrong, say so explicitly.
+
+**Step 2 — Write `pipeline/RESULT.md`** (redacted, safe to keep/commit) using the template below, including the Generation Report.
+
+**Step 3 — Operator completion summary.** Present a final summary directly to the operator in this session containing:
+- the live **Site URL**, **Gitea URL**, and **TinaCMS admin + login** URLs;
+- the **credentials** to log in (TinaCMS admin + Gitea), read from `pipeline/vps-connection.json` / `pipeline/installation-summary.md`;
+- the full **Generation Report** — problems, bugs, gaps, inefficiencies, each with severity and any follow-up the operator still owns.
+
+**Secret handling for the summary:** credentials may be shown to the operator **in this interactive session** and persisted only in the owner-only `0600` files (`pipeline/vps-connection.json`, `pipeline/installation-summary.md`). Never write credentials into `pipeline/RESULT.md`, `pipeline/STATUS.md`, `pipeline/generation-report.md`, or anything pushed to Gitea.
 
 ### Failure Handling
 
@@ -945,6 +956,22 @@ Retry ownership belongs to the orchestrator. Subagents should make a primary att
 - On retry, pass previous output — don't start from scratch
 - Before a third retry for an unclear validation/build/deploy failure, invoke `@astro-static/auditor` and include its single recommended next action in `STATUS.md`.
 - On persistent failure, write `pipeline/HUMAN_REVIEW.md` and halt
+
+### Generation Issue Ledger
+
+Throughout the run, keep a running ledger of everything that went wrong, was worked around, or was left incomplete — not just fatal errors. Append an entry to `pipeline/generation-report.md` (create it on first use) the moment it happens, so nothing is lost if a later phase fails. This file is **operator-facing and must never contain secrets** (no passwords, tokens, keys, or full credential values).
+
+Each entry records: `phase`, `severity` (`blocker` | `bug` | `gap` | `inefficiency` | `warning`), what happened, how it was resolved (`retry` / `fallback` / `skipped` / `human_review` / `manual_followup`), and any recommended follow-up.
+
+Capture at minimum:
+- every retry (mirror `pipeline/retry.log` — repeated `STATUS:` signatures count as inefficiencies)
+- every fallback used instead of the intended output: SVG placeholder images, skipped/failed videos, HyperFrames skipped, Instagram scrape failures, placeholder copy
+- non-fatal validator warnings and any smoke-check retries
+- VPS install warnings / errors / inefficiencies (from `pipeline/installation-summary.md`)
+- any phase marked `skipped` that the brief implied should run, and any `halted_for_review` later resolved
+- manual steps still owed to the operator (real domain swap, placeholder refinement, etc.)
+
+Phase 5 consolidates this ledger into the final Generation Report and operator summary.
 
 #### STATUS token grammar
 
@@ -1102,8 +1129,8 @@ After Phase 5 passes, write `pipeline/RESULT.md`:
 - **TinaCMS Login:** <site_url>/admin/login.html
 
 ## Credentials
-- Credentials are not printed in this report. Authorized operators can read `pipeline/vps-connection.json` on the control node; it must remain mode `0600` and gitignored.
-- Full URL + credential handoff lives in `pipeline/installation-summary.md` when bootstrap produced it; keep it mode `0600` and never paste it into public logs or tickets.
+- **Credentials are not printed in this report.** RESULT.md is safe to keep or commit — it never contains passwords, tokens, or keys.
+- The operator is shown the live credentials in the session at completion (Phase 5, Step 3). They persist only in owner-only `0600` files — `pipeline/vps-connection.json` and `pipeline/installation-summary.md` — which stay gitignored and never go to public logs, tickets, or Gitea.
 
 ## Installation Diagnostics
 - Full installation log: `pipeline/installation.log` when available.
@@ -1119,8 +1146,15 @@ After Phase 5 passes, write `pipeline/RESULT.md`:
 - **Typography:** <fonts>
 - **Colors:** <primary / secondary / background>
 
+## Generation Report
+Consolidated problems, bugs, gaps, and inefficiencies encountered during the build (secret-free). Write "None — clean run" if nothing went wrong.
+
+| Severity | Phase | Issue | Resolution / Follow-up |
+|----------|-------|-------|------------------------|
+| ... | ... | ... | ... |
+
 ## Warnings / Human Review Points
-<anything flagged during the pipeline>
+<anything that still needs a human decision>
 
 ## Cost Estimate
 - VPS: ~$N/mo

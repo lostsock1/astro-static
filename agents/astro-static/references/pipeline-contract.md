@@ -61,4 +61,5 @@ Blueprint phase scripts may emit: `STATUS:TINA_BLUEPRINT_OK`, `STATUS:TINA_BLUEP
 - `pipeline/bootstrap-result.json` may contain secrets and must be mode `0600`.
 - `pipeline/installation-summary.md` may contain URLs, credentials, and diagnostics and must be mode `0600`.
 - `pipeline/installation.log` must capture the full installation process and must be mode `0600`.
-- `pipeline/RESULT.md`, `pipeline/STATUS.md`, logs, and agent summaries must not print passwords, tokens, private keys, or full secret values.
+- `pipeline/generation-report.md` is operator-facing (problems, bugs, gaps, inefficiencies) and is redacted — it must not contain secrets.
+- `pipeline/RESULT.md`, `pipeline/STATUS.md`, `pipeline/generation-report.md`, logs, and agent summaries must not print passwords, tokens, private keys, or full secret values. Credentials may be surfaced to the operator only in the live session and the `0600` handoff files.

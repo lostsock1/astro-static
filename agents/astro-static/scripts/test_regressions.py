@@ -778,6 +778,26 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertIn("content model / IA / page-structure changes → invalidate `2_6_tina_blueprint`", text)
         self.assertIn("Tina coverage changes → rerun Phase 4.1", text)
 
+    def test_new_site_command_runs_instagram_wizard(self) -> None:
+        text = (COMMANDS / "astro-static" / "new-site.md").read_text()
+        self.assertIn("Stage 1", text)
+        self.assertIn("one stage at a time", text)
+        self.assertIn("Confirm", text)
+        self.assertIn("instagram_handle", text)
+        self.assertIn("instagram_use", text)
+        for use in ("design_reference", "brand_research", "content", "both"):
+            self.assertIn(use, text)
+        self.assertIn("generation report", text.lower())
+
+    def test_orchestrator_emits_completion_report_and_credentials_handoff(self) -> None:
+        text = (AGENTS / "orchestrator.md").read_text()
+        self.assertIn("Generation Issue Ledger", text)
+        self.assertIn("pipeline/generation-report.md", text)
+        self.assertIn("Operator completion summary", text)
+        self.assertIn("credentials", text.lower())
+        self.assertIn("Never write credentials into `pipeline/RESULT.md`", text)
+        self.assertIn("must never contain secrets", text)
+
     def test_setup_vps_provisions_tina_ssr_backend_consistently(self) -> None:
         text = (ROOT / "setup-vps.sh").read_text()
         self.assertNotRegex(text, r"Phase [0-9.]+/12")
