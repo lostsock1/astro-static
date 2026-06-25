@@ -316,7 +316,7 @@ STATE=$($SSH_CMD "
   CADDY=\$(which caddy >/dev/null 2>&1 && echo YES || echo NO)
   GITEA=\$(systemctl is-active gitea 2>/dev/null || echo NO)
   PROJECT=\$([ -d /var/www/sites/$PROJECT ] && echo YES || echo NO)
-  BOOTSTRAPPED=\$([ -f /var/lib/site-pipeline/bootstrapped ] && echo YES || echo NO)
+  BOOTSTRAPPED=\$(sudo test -f /var/lib/site-pipeline/bootstrapped && echo YES || echo NO)
   echo \"NODE=\$NODE CADDY=\$CADDY GITEA=\$GITEA PROJECT=\$PROJECT BOOTSTRAPPED=\$BOOTSTRAPPED\"
 ")
 echo "$STATE"

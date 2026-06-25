@@ -816,6 +816,17 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertIn("Gitea unreachable on 127.0.0.1:3000", text)
         self.assertNotIn("Gitea credentials invalid for ${GITEA_ADMIN_USER}", text)
 
+    def test_state_dir_checks_use_sudo(self) -> None:
+        # /var/lib/site-pipeline is root-only (0700); existence checks over SSH
+        # run as the deploy user and MUST use sudo or they false-negative.
+        join = (ROOT / "phases" / "bootstrap-join.sh").read_text()
+        self.assertIn("sudo test -f /var/lib/site-pipeline/pipeline-result.json", join)
+        self.assertIn("sudo test -f /var/lib/site-pipeline/bootstrapped", join)
+        self.assertNotIn('"test -f /var/lib/site-pipeline', join)
+        orch = (AGENTS / "orchestrator.md").read_text()
+        self.assertIn("sudo test -f /var/lib/site-pipeline/bootstrapped", orch)
+        self.assertNotIn("[ -f /var/lib/site-pipeline/bootstrapped ]", orch)
+
     def test_orchestrator_emits_completion_report_and_credentials_handoff(self) -> None:
         text = (AGENTS / "orchestrator.md").read_text()
         self.assertIn("Generation Issue Ledger", text)

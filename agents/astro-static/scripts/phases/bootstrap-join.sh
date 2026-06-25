@@ -86,7 +86,7 @@ fi
 EXIT=$(cat pipeline/bootstrap.exit 2>/dev/null | head -1 | tr -d '[:space:]' || echo MISSING)
 
 if [ "$EXIT" != "0" ]; then
-  VPS_OK=$($SSH "test -f /var/lib/site-pipeline/bootstrapped && echo YES || echo NO" 2>/dev/null || echo NO)
+  VPS_OK=$($SSH "sudo test -f /var/lib/site-pipeline/bootstrapped && echo YES || echo NO" 2>/dev/null || echo NO)
   if [ "$VPS_OK" != "YES" ]; then
     echo "STATUS:BOOTSTRAP_FAILED exit=$EXIT — see pipeline/bootstrap.log"
     exit 1
@@ -97,7 +97,7 @@ fi
 # --- Step 3: Fetch structured bootstrap result (required) ---
 # setup-vps.sh's EXIT trap always writes /var/lib/site-pipeline/pipeline-result.json. If it's
 # missing here, something deleted it after the trap ran — fail loud.
-if ! $SSH "test -f /var/lib/site-pipeline/pipeline-result.json" 2>/dev/null; then
+if ! $SSH "sudo test -f /var/lib/site-pipeline/pipeline-result.json" 2>/dev/null; then
   echo "STATUS:BOOTSTRAP_RESULT_INVALID reason=pipeline_result_missing_on_vps"
   exit 1
 fi
