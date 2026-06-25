@@ -1373,6 +1373,12 @@ log "Phase 9/13: Project ${PROJECT_NAME} site_dir at ${SITE_DIR}"
 
 mkdir -p "${SITE_DIR}/dist"
 
+# umask 077 (set above for secret safety) makes mkdir -p create /var/www and
+# /var/www/sites at 0700 — un-traversable by Caddy and the deploy user, which
+# breaks static/admin serving, the git-sync watcher, and the join's site_dir
+# probe. The web path must be traversable; content under the site dir is public.
+chmod 0755 /var/www /var/www/sites "${SITE_DIR}"
+
 PROJECT_ALREADY_SCAFFOLDED=false
 if [[ -f "${SITE_DIR}/package.json" ]] && [[ "$FORCE_PROJECT" != "true" ]]; then
   PROJECT_ALREADY_SCAFFOLDED=true

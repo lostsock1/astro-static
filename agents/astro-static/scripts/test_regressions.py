@@ -827,6 +827,12 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertIn("sudo test -f /var/lib/site-pipeline/bootstrapped", orch)
         self.assertNotIn("[ -f /var/lib/site-pipeline/bootstrapped ]", orch)
 
+    def test_setup_vps_makes_web_path_traversable(self) -> None:
+        # umask 077 would create /var/www and /var/www/sites at 0700, blocking
+        # Caddy / the deploy user from reaching the served site.
+        text = (ROOT / "setup-vps.sh").read_text()
+        self.assertIn("chmod 0755 /var/www /var/www/sites", text)
+
     def test_orchestrator_emits_completion_report_and_credentials_handoff(self) -> None:
         text = (AGENTS / "orchestrator.md").read_text()
         self.assertIn("Generation Issue Ledger", text)
