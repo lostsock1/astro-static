@@ -806,6 +806,10 @@ class AstroStaticRegressionTests(unittest.TestCase):
         # INTERNAL_TOKEN pre-seeded so Gitea never writes the read-only app.ini
         self.assertIn("generate secret INTERNAL_TOKEN", text)
         self.assertIn("INTERNAL_TOKEN = ${GITEA_INTERNAL_TOKEN}", text)
+        # app.ini must be git-writable so Gitea can persist INTERNAL_TOKEN,
+        # JWT_SECRET, etc. on first start (read-only root:git crash-loops it)
+        self.assertIn("chown git:git /etc/gitea/app.ini", text)
+        self.assertNotIn("chown root:git /etc/gitea/app.ini", text)
         # crash-loop recovery on re-run
         self.assertIn("reset-failed gitea", text)
         # Phase 11 distinguishes "down" (000) from bad creds; old misleading msg gone

@@ -988,7 +988,7 @@ MODE      = console
 LEVEL     = Info
 ROOT_PATH = /var/lib/gitea/log
 EOF
-    chown root:git /etc/gitea/app.ini
+    chown git:git /etc/gitea/app.ini
     chmod 0640 /etc/gitea/app.ini
   else
     skip "/etc/gitea/app.ini exists — preserving operator config"
@@ -1000,15 +1000,12 @@ EOF
       log "Injected missing INTERNAL_TOKEN into existing /etc/gitea/app.ini"
     fi
   fi
-  chown root:git /etc/gitea/app.ini
-  # Read-only is safe once the token is seeded; if seeding failed, let the git
-  # run-user own app.ini so Gitea can self-generate the token instead of crashing.
-  if grep -q '^INTERNAL_TOKEN' /etc/gitea/app.ini; then
-    chmod 0640 /etc/gitea/app.ini
-  else
-    chown git:git /etc/gitea/app.ini
-    chmod 0640 /etc/gitea/app.ini
-  fi
+  # Gitea (run-user git) generates and persists secrets into app.ini on first
+  # start (INTERNAL_TOKEN, JWT_SECRET, OAuth2 keys, ...). app.ini MUST be
+  # writable by the git user or Gitea crash-loops with "permission denied".
+  # /etc/gitea stays root:git 0770; app.ini is owned by git so it self-manages.
+  chown git:git /etc/gitea/app.ini
+  chmod 0640 /etc/gitea/app.ini
 
   if [[ ! -f /etc/systemd/system/gitea.service ]]; then
     cat > /etc/systemd/system/gitea.service << 'EOF'
