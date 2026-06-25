@@ -736,6 +736,13 @@ findtime   = 24h
 bantime    = 1w
 F2B_EOF
 
+  # Whitelist the control node: the pipeline connects over SSH many times across
+  # phases (probe, bootstrap, rsync, build, smoke, git push) and must never
+  # fail2ban-lock itself out of its own VPS.
+  if [[ -n "${CONTROL_NODE_IP:-}" ]]; then
+    sed -i "s|^ignoreip   = 127.0.0.1/8 ::1|ignoreip   = 127.0.0.1/8 ::1 ${CONTROL_NODE_IP}|" "$TMP_F2B"
+  fi
+
   if [[ -f "$FAIL2BAN_FILE" ]] && cmp -s "$FAIL2BAN_FILE" "$TMP_F2B"; then
     skip "fail2ban jail.local already current"
     rm -f "$TMP_F2B"

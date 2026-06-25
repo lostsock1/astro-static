@@ -833,6 +833,14 @@ class AstroStaticRegressionTests(unittest.TestCase):
         text = (ROOT / "setup-vps.sh").read_text()
         self.assertIn("chmod 0755 /var/www /var/www/sites", text)
 
+    def test_pipeline_whitelists_control_node_in_fail2ban(self) -> None:
+        # the pipeline connects over SSH repeatedly; it must whitelist the
+        # control node so fail2ban can't lock it out of its own VPS
+        setup = (ROOT / "setup-vps.sh").read_text()
+        self.assertIn("ignoreip   = 127.0.0.1/8 ::1 ${CONTROL_NODE_IP}", setup)
+        bg = (ROOT / "bg-bootstrap.sh").read_text()
+        self.assertIn("export CONTROL_NODE_IP", bg)
+
     def test_orchestrator_emits_completion_report_and_credentials_handoff(self) -> None:
         text = (AGENTS / "orchestrator.md").read_text()
         self.assertIn("Generation Issue Ledger", text)

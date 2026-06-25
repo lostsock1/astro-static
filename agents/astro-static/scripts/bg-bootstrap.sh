@@ -73,6 +73,13 @@ GITEA_USER=$(jq -r '.gitea_user // "siteadmin"' "$VPS_JSON")
 [[ "$GITEA_USER" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || { echo "STATUS:INVALID_VPS_CONFIG reason=bad_gitea_user"; exit 2; }
 [[ "$GITEA_PASS" =~ ^[A-Za-z0-9_-]{16,128}$ ]] || { echo "STATUS:INVALID_VPS_CONFIG reason=bad_gitea_pass"; exit 2; }
 
+# Best-effort: capture the control node's public IP so the VPS can whitelist it
+# in fail2ban — the pipeline connects over SSH repeatedly and must never get
+# itself banned and locked out of its own VPS.
+CONTROL_NODE_IP=$(curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null || curl -fsS --max-time 5 https://icanhazip.com 2>/dev/null || true)
+CONTROL_NODE_IP=$(printf '%s' "$CONTROL_NODE_IP" | tr -d '[:space:]')
+case "$CONTROL_NODE_IP" in ""|*[!0-9A-Fa-f:.]*) CONTROL_NODE_IP="";; esac
+
 LOCAL_WRAPPER=$(mktemp "$PROJECT_DIR/pipeline/setup-wrapper.XXXXXX")
 chmod 600 "$LOCAL_WRAPPER"
 cleanup_wrapper() { rm -f "$LOCAL_WRAPPER" 2>/dev/null || true; }
@@ -88,6 +95,7 @@ trap cleanup_wrapper EXIT
   printf 'export GITEA_ADMIN_PASS=%q\n' "$GITEA_PASS"
   printf '%s\n' 'export GITEA_ADMIN_EMAIL=admin@localhost'
   printf '%s\n' 'export DOMAIN=auto'
+  printf 'export CONTROL_NODE_IP=%q\n' "$CONTROL_NODE_IP"
   printf '%s\n' 'rm -f /tmp/setup-vps.exit /tmp/setup-vps.log /var/lib/site-pipeline/pipeline-result.json'
   printf '%s\n' 'trap '\''rc=$?; echo "$rc" > /tmp/setup-vps.exit; rm -f /tmp/pipeline-setup-wrapper.sh; exit "$rc"'\'' EXIT'
   printf '%s\n' 'bash /tmp/setup-vps.sh > /tmp/setup-vps.log 2>&1'
