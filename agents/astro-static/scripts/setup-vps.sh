@@ -930,6 +930,16 @@ if $SYSTEM_NEEDED; then
     GITEA_SECRET=$(openssl rand -hex 32)
   fi
 
+  # Preserve existing internal token; otherwise pre-generate one. Gitea writes
+  # INTERNAL_TOKEN into app.ini on first start when it is missing, but app.ini is
+  # root:git 0640 (read-only for the git run-user) -> that write fails with
+  # "permission denied" and Gitea crash-loops. Seeding it keeps app.ini stable.
+  if [[ -f /etc/gitea/app.ini ]] && grep -q '^INTERNAL_TOKEN' /etc/gitea/app.ini; then
+    GITEA_INTERNAL_TOKEN=$(awk -F'= *' '/^INTERNAL_TOKEN/{print $2; exit}' /etc/gitea/app.ini)
+  else
+    GITEA_INTERNAL_TOKEN=$(/usr/local/bin/gitea generate secret INTERNAL_TOKEN 2>/dev/null || true)
+  fi
+
   if [[ "$USE_TLS" == true ]]; then
     GITEA_ROOT_URL="https://${GIT_HOST}/"
     GITEA_DOMAIN="${GIT_HOST}"
@@ -961,8 +971,9 @@ ROOT = /home/git/gitea-repositories
 DEFAULT_BRANCH = main
 
 [security]
-INSTALL_LOCK = true
-SECRET_KEY   = ${GITEA_SECRET}
+INSTALL_LOCK   = true
+SECRET_KEY     = ${GITEA_SECRET}
+INTERNAL_TOKEN = ${GITEA_INTERNAL_TOKEN}
 
 [service]
 DISABLE_REGISTRATION       = true
@@ -981,9 +992,23 @@ EOF
     chmod 0640 /etc/gitea/app.ini
   else
     skip "/etc/gitea/app.ini exists — preserving operator config"
+    # Heal an older app.ini written before INTERNAL_TOKEN seeding: without the
+    # token Gitea tries to write the read-only file on start and crash-loops.
+    if [[ -n "$GITEA_INTERNAL_TOKEN" ]] && ! grep -q '^INTERNAL_TOKEN' /etc/gitea/app.ini; then
+      awk -v tok="$GITEA_INTERNAL_TOKEN" '{print} /^\[security\]/{print "INTERNAL_TOKEN = " tok}' \
+        /etc/gitea/app.ini > /etc/gitea/app.ini.tmp && mv /etc/gitea/app.ini.tmp /etc/gitea/app.ini
+      log "Injected missing INTERNAL_TOKEN into existing /etc/gitea/app.ini"
+    fi
   fi
   chown root:git /etc/gitea/app.ini
-  chmod 0640 /etc/gitea/app.ini
+  # Read-only is safe once the token is seeded; if seeding failed, let the git
+  # run-user own app.ini so Gitea can self-generate the token instead of crashing.
+  if grep -q '^INTERNAL_TOKEN' /etc/gitea/app.ini; then
+    chmod 0640 /etc/gitea/app.ini
+  else
+    chown git:git /etc/gitea/app.ini
+    chmod 0640 /etc/gitea/app.ini
+  fi
 
   if [[ ! -f /etc/systemd/system/gitea.service ]]; then
     cat > /etc/systemd/system/gitea.service << 'EOF'
@@ -1007,11 +1032,12 @@ EOF
     systemctl daemon-reload
   fi
 
+  # Clear any prior crash-loop state ("start request repeated too quickly") so a
+  # re-run can bring Gitea back up after the app.ini fix above.
+  systemctl reset-failed gitea 2>/dev/null || true
   systemctl enable --now gitea >/dev/null 2>&1 || true
-  # If we replaced the binary, restart to pick it up
-  if [[ "$CURRENT_GITEA_VERSION" != "$GITEA_VERSION" ]]; then
-    systemctl restart gitea
-  fi
+  # Restart to pick up a replaced binary or a healed app.ini.
+  systemctl restart gitea 2>/dev/null || true
 
   for i in $(seq 1 30); do
     curl -s http://127.0.0.1:3000/ >/dev/null 2>&1 && break
@@ -2295,9 +2321,19 @@ fi
 log "Phase 11/13: Gitea repo ${PROJECT_NAME}"
 
 GITEA_API="http://127.0.0.1:3000/api/v1"
-AUTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -u "${GITEA_ADMIN_USER}:${GITEA_ADMIN_PASS}" "${GITEA_API}/user" 2>/dev/null || echo "000")
-if [[ "$AUTH_STATUS" != "200" ]]; then
-  err "Gitea credentials invalid for ${GITEA_ADMIN_USER} (status=${AUTH_STATUS}) — cannot create repo safely"
+# Gitea may still be (re)starting after earlier phases — wait for it to answer
+# before judging auth, and distinguish "unreachable" (000) from "bad creds".
+AUTH_STATUS="000"
+for _i in $(seq 1 30); do
+  AUTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -u "${GITEA_ADMIN_USER}:${GITEA_ADMIN_PASS}" "${GITEA_API}/user" 2>/dev/null) || AUTH_STATUS="000"
+  [[ "$AUTH_STATUS" == "200" ]] && break
+  sleep 2
+done
+if [[ "$AUTH_STATUS" == "000" || -z "$AUTH_STATUS" ]]; then
+  err "Gitea unreachable on 127.0.0.1:3000 (status=000) — service likely down; check: systemctl status gitea"
+  exit 1
+elif [[ "$AUTH_STATUS" != "200" ]]; then
+  err "Gitea admin auth failed for ${GITEA_ADMIN_USER} (status=${AUTH_STATUS})"
   exit 1
 else
   GITEA_AUTH_OK=true

@@ -801,6 +801,17 @@ class AstroStaticRegressionTests(unittest.TestCase):
         # portable, no machine-specific home
         self.assertNotIn("/Users/", text)
 
+    def test_setup_vps_seeds_gitea_internal_token_and_diagnoses_downtime(self) -> None:
+        text = (ROOT / "setup-vps.sh").read_text()
+        # INTERNAL_TOKEN pre-seeded so Gitea never writes the read-only app.ini
+        self.assertIn("generate secret INTERNAL_TOKEN", text)
+        self.assertIn("INTERNAL_TOKEN = ${GITEA_INTERNAL_TOKEN}", text)
+        # crash-loop recovery on re-run
+        self.assertIn("reset-failed gitea", text)
+        # Phase 11 distinguishes "down" (000) from bad creds; old misleading msg gone
+        self.assertIn("Gitea unreachable on 127.0.0.1:3000", text)
+        self.assertNotIn("Gitea credentials invalid for ${GITEA_ADMIN_USER}", text)
+
     def test_orchestrator_emits_completion_report_and_credentials_handoff(self) -> None:
         text = (AGENTS / "orchestrator.md").read_text()
         self.assertIn("Generation Issue Ledger", text)
@@ -856,7 +867,8 @@ class AstroStaticRegressionTests(unittest.TestCase):
         ]:
             self.assertIn(expected, text)
         self.assertIn('err "Gitea admin ${GITEA_ADMIN_USER} still not working', text)
-        self.assertIn('err "Gitea credentials invalid for ${GITEA_ADMIN_USER}', text)
+        self.assertIn('err "Gitea unreachable on 127.0.0.1:3000', text)
+        self.assertIn('err "Gitea admin auth failed for ${GITEA_ADMIN_USER}', text)
         self.assertNotIn('LocalBackendAuthProvider', text)
         self.assertNotIn('X-Frame-Options "DENY"', text)
         self.assertNotIn('export const ALL: APIRoute = experimental_createIslandRoute(islands);', text)
