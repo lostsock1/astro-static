@@ -14,7 +14,7 @@
 ![SSR](https://img.shields.io/badge/Astro-Node%20SSR-2C2255?logo=node.js&logoColor=white)
 ![Deploy](https://img.shields.io/badge/deploy-Debian%20VPS-0A0A0A?logo=debian&logoColor=white)
 ![Gitea](https://img.shields.io/badge/source-Gitea%20%2B%20Caddy-609926?logo=gitea&logoColor=white)
-![Tests](https://img.shields.io/badge/regression%20tests-110%20passing-3FB950)
+![Tests](https://img.shields.io/badge/regression%20tests-111%20passing-3FB950)
 ![Fail-closed](https://img.shields.io/badge/pipeline-fail--closed-blue)
 
 </div>
@@ -276,7 +276,7 @@ This repo is the **single source of truth** — no duplicated copies. `sync.sh` 
 
 ## 🛡️ Fail-closed validation
 
-`validate-pipeline.py` is the enforcement layer — ~40 checks across six phase gates, backed by **110 regression tests** that encode real failures found in live runs. It rejects, among many others:
+`validate-pipeline.py` is the enforcement layer — ~40 checks across six phase gates, backed by **111 regression tests** that encode real failures found in live runs. It rejects, among many others:
 
 - a Tina blueprint that's missing before assets/codegen, or missing settings/nav/footer fields
 - visible text with no Tina field marker, or media paths not backed by a Tina/content/manifest field
@@ -289,7 +289,7 @@ This repo is the **single source of truth** — no duplicated copies. `sync.sh` 
 
 ```bash
 python3 agents/astro-static/scripts/test_regressions.py
-# Ran 110 tests — OK
+# Ran 111 tests — OK
 ```
 
 <details>
@@ -317,7 +317,7 @@ The schemas, validators, agent prompts, references, and regression tests are **o
 
 ```bash
 # full pre-publish check
-python3 agents/astro-static/scripts/test_regressions.py        # 110 tests
+python3 agents/astro-static/scripts/test_regressions.py        # 111 tests
 S=agents/astro-static/scripts
 python3 -m py_compile $S/validate-pipeline.py $S/test_regressions.py $S/phases/tina-blueprint.py
 bash -n $S/setup-vps.sh $S/bg-bootstrap.sh

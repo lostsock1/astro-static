@@ -1287,7 +1287,7 @@ inotifywait -m -r -e modify,create,delete,move src/content src/assets public 2>/
   fi
 done
 GITSYNC
-chmod +x /usr/local/bin/git-sync-watch
+chmod 0755 /usr/local/bin/git-sync-watch
 
 cat > /usr/local/bin/site-build << 'BUILD'
 #!/usr/bin/env bash
@@ -1322,7 +1322,7 @@ if [[ -f "$SITE_DIR/dist/server/entry.mjs" ]]; then
 fi
 echo "[build] Done — $(date)"
 BUILD
-chmod +x /usr/local/bin/site-build
+chmod 0755 /usr/local/bin/site-build
 
 # Mark system phases complete only when the system phases actually ran.
 if $SYSTEM_NEEDED; then

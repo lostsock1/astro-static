@@ -833,6 +833,15 @@ class AstroStaticRegressionTests(unittest.TestCase):
         text = (ROOT / "setup-vps.sh").read_text()
         self.assertIn("chmod 0755 /var/www /var/www/sites", text)
 
+    def test_setup_vps_shared_executables_are_world_executable(self) -> None:
+        # umask 077 + `chmod +x` yields 0700 root — the deploy user (which runs
+        # site-build via build-deployer and git-sync-watch via systemd) can't
+        # execute them. Use explicit 0755.
+        text = (ROOT / "setup-vps.sh").read_text()
+        self.assertNotIn("chmod +x /usr/local/bin", text)
+        self.assertIn("chmod 0755 /usr/local/bin/site-build", text)
+        self.assertIn("chmod 0755 /usr/local/bin/git-sync-watch", text)
+
     def test_pipeline_whitelists_control_node_in_fail2ban(self) -> None:
         # the pipeline connects over SSH repeatedly; it must whitelist the
         # control node so fail2ban can't lock it out of its own VPS
