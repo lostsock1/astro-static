@@ -842,6 +842,13 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertIn("chmod 0755 /usr/local/bin/site-build", text)
         self.assertIn("chmod 0755 /usr/local/bin/git-sync-watch", text)
 
+    def test_push_gitea_tolerates_ignored_file_advice(self) -> None:
+        # `git add -A -- . :!...` exits 1 (advice) when local gitignored files
+        # like node_modules (left by the Phase 4.2 Tina build) are present, yet
+        # it still stages the real files. Under set -eu that aborts the push.
+        text = (ROOT / "phases" / "push-gitea.sh").read_text()
+        self.assertIn("':!pipeline/HUMAN_REVIEW.md' || true", text)
+
     def test_pipeline_whitelists_control_node_in_fail2ban(self) -> None:
         # the pipeline connects over SSH repeatedly; it must whitelist the
         # control node so fail2ban can't lock it out of its own VPS

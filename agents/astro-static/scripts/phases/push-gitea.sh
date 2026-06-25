@@ -229,7 +229,7 @@ git add -A -- . \
   ':!pipeline/installation.log' \
   ':!pipeline/setup-wrapper.*' \
   ':!pipeline/RESULT.md' \
-  ':!pipeline/HUMAN_REVIEW.md'
+  ':!pipeline/HUMAN_REVIEW.md' || true
 if git diff --cached --quiet; then
   echo "STATUS:NOTHING_TO_COMMIT"
 else

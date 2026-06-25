@@ -102,7 +102,7 @@ python3 $HOME/.config/opencode/astro-static/phases/tina-blueprint.py validate --
 Expected regression output at this stack revision:
 
 ```text
-Ran 111 tests
+Ran 112 tests
 OK
 ```
 
