@@ -789,6 +789,18 @@ class AstroStaticRegressionTests(unittest.TestCase):
             self.assertIn(use, text)
         self.assertIn("generation report", text.lower())
 
+    def test_add_domain_command_uses_force_project_and_root_url_caveat(self) -> None:
+        text = (COMMANDS / "astro-static" / "add-domain.md").read_text()
+        self.assertIn("agent: astro-static/orchestrator", text)
+        # regenerates the per-project Caddy fragment via setup-vps.sh
+        self.assertIn("FORCE_PROJECT=true", text)
+        self.assertIn("setup-vps.sh", text)
+        # must handle Gitea ROOT_URL manually — setup-vps.sh won't rewrite app.ini on re-run
+        self.assertIn("ROOT_URL", text)
+        self.assertIn("app.ini", text)
+        # portable, no machine-specific home
+        self.assertNotIn("/Users/", text)
+
     def test_orchestrator_emits_completion_report_and_credentials_handoff(self) -> None:
         text = (AGENTS / "orchestrator.md").read_text()
         self.assertIn("Generation Issue Ledger", text)
