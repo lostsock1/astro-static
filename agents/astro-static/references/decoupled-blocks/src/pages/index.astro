@@ -1,0 +1,22 @@
+---
+import { getEntry } from "astro:content";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Hero from "../components/blocks/Hero.astro";
+import Features from "../components/blocks/Features.astro";
+import CTA from "../components/blocks/CTA.astro";
+
+// Plain markdown read — no Tina client, so the build can't fail on a CMS query.
+const home = await getEntry("pages", "home");
+const blocks = (home?.data.blocks ?? []) as any[];
+
+// Block registry: _template -> Astro component. Adding a section type later is
+// one entry here + one component + one template in tina/config.ts.
+const registry: Record<string, any> = { hero: Hero, features: Features, cta: CTA };
+---
+<BaseLayout title={home?.data.title ?? "Home"}>
+  {blocks.map((block) => {
+    const Component = registry[block._template];
+    return Component ? <Component {...block} /> : null;
+  })}
+  <footer>Built with Astro · edited with TinaCMS · {blocks.length} sections rendered</footer>
+</BaseLayout>

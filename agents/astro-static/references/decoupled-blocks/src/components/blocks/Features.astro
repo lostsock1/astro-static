@@ -1,0 +1,23 @@
+---
+interface Item { title?: string; description?: string }
+interface Props { heading?: string; items?: Item[] }
+const { heading, items = [] } = Astro.props;
+---
+<section class="features">
+  <div class="container">
+    {heading && (
+      <div class="features__head">
+        <h2 class="features__title">{heading}</h2>
+      </div>
+    )}
+    <div class="features__grid">
+      {items.map((item) => (
+        <article class="card">
+          <div class="card__dot"></div>
+          {item.title && <h3 class="card__title">{item.title}</h3>}
+          {item.description && <p class="card__desc">{item.description}</p>}
+        </article>
+      ))}
+    </div>
+  </div>
+</section>

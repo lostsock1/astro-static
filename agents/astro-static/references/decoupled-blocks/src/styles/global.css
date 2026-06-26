@@ -1,0 +1,138 @@
+:root {
+  --bg: #ffffff;
+  --fg: #0f172a;
+  --muted: #5b6678;
+  --accent: #6366f1;
+  --accent-2: #8b5cf6;
+  --border: #e8eaf0;
+  --card: #ffffff;
+  --container: 1080px;
+  --radius: 16px;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.container { width: 100%; max-width: var(--container); margin: 0 auto; padding: 0 24px; }
+
+.btn {
+  display: inline-block;
+  padding: 13px 26px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 15px;
+  text-decoration: none;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff;
+  box-shadow: 0 8px 24px -8px rgba(99, 102, 241, 0.6);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.btn:hover { transform: translateY(-2px); box-shadow: 0 14px 30px -10px rgba(99, 102, 241, 0.7); }
+
+/* ── Hero ───────────────────────────────────────────── */
+.hero {
+  position: relative;
+  text-align: center;
+  padding: 120px 0 100px;
+  background:
+    radial-gradient(60% 70% at 50% -10%, rgba(139, 92, 246, 0.14), transparent 60%),
+    radial-gradient(50% 50% at 85% 10%, rgba(99, 102, 241, 0.10), transparent 60%);
+  overflow: hidden;
+}
+.hero__eyebrow {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.09);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  padding: 6px 14px;
+  border-radius: 999px;
+  margin-bottom: 26px;
+}
+.hero__title {
+  font-size: clamp(2.4rem, 5.5vw, 4rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+  margin: 0 auto 22px;
+  max-width: 16ch;
+  background: linear-gradient(180deg, #0f172a, #3a3f57);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.hero__subtitle {
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  color: var(--muted);
+  max-width: 60ch;
+  margin: 0 auto 36px;
+}
+
+/* ── Features ───────────────────────────────────────── */
+.features { padding: 88px 0; }
+.features__head { text-align: center; margin-bottom: 56px; }
+.features__title {
+  font-size: clamp(1.7rem, 3.5vw, 2.4rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.features__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 22px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 30px 26px;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 20px 40px -24px rgba(15, 23, 42, 0.35);
+}
+.card__dot {
+  width: 42px; height: 42px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  margin-bottom: 18px;
+  box-shadow: 0 8px 20px -8px rgba(99, 102, 241, 0.7);
+}
+.card__title { font-size: 1.18rem; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+.card__desc { color: var(--muted); margin: 0; font-size: 0.98rem; }
+
+/* ── CTA ────────────────────────────────────────────── */
+.cta { padding: 40px 24px 96px; }
+.cta__inner {
+  max-width: var(--container);
+  margin: 0 auto;
+  text-align: center;
+  background: linear-gradient(135deg, #111322, #1e2240);
+  border-radius: 28px;
+  padding: 72px 32px;
+  position: relative;
+  overflow: hidden;
+}
+.cta__inner::before {
+  content: "";
+  position: absolute; inset: 0;
+  background: radial-gradient(50% 80% at 50% 0%, rgba(139, 92, 246, 0.28), transparent 60%);
+}
+.cta__title { position: relative; font-size: clamp(1.7rem, 3.5vw, 2.5rem); font-weight: 800; color: #fff; margin: 0 0 14px; letter-spacing: -0.02em; }
+.cta__body { position: relative; color: #aab2cf; max-width: 50ch; margin: 0 auto 30px; font-size: 1.08rem; }
+.cta .btn { position: relative; }
+
+footer { text-align: center; color: var(--muted); font-size: 0.9rem; padding: 36px 0; border-top: 1px solid var(--border); }
