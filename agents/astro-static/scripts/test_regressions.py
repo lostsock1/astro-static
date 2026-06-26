@@ -1847,6 +1847,79 @@ class AstroStaticRegressionTests(unittest.TestCase):
             )
             self.assertEqual(validate.returncode, 0, validate.stdout + validate.stderr)
 
+    def test_tina_blueprint_generator_defaults_to_admin_blocks_mode(self) -> None:
+        # Decoupled-blocks migration: new sites are admin-blocks (no in-page overlay).
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            pipeline = project / "pipeline"
+            pipeline.mkdir()
+            self._write_blueprint_creative_brief(pipeline)
+            result = subprocess.run(
+                ["python3", str(ROOT / "phases" / "tina-blueprint.py"), "generate", "--pipeline-dir", "pipeline/"],
+                cwd=project, text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            blueprint = json.loads((pipeline / "01-tina-blueprint.json").read_text())
+            self.assertEqual(blueprint.get("editing_mode"), "admin-blocks")
+
+    def test_validator_skips_overlay_contract_in_admin_blocks_mode(self) -> None:
+        # Same shape as test_validator_requires_tina_click_to_edit_markers (which
+        # FAILS on the missing data-tina-field), but editing_mode=admin-blocks means
+        # the decoupled site must NOT be required to carry overlay markers.
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._write_minimal_pipeline_project(
+                project,
+                '@import "tailwindcss";\n@theme { --color-background: oklch(0.94 0.01 140); --font-body: "Inter"; }\n',
+            )
+            (project / "pipeline").mkdir(parents=True, exist_ok=True)
+            (project / "pipeline/01-tina-blueprint.json").write_text(json.dumps({
+                "schema_version": "astro-static-tina-blueprint/v1",
+                "editing_mode": "admin-blocks",
+            }))
+            (project / "package.json").write_text(json.dumps({
+                "dependencies": {"astro": "^7.0.2", "@tinacms/astro": "^0.5.0", "tinacms": "^3.9.3"},
+                "devDependencies": {},
+            }))
+            (project / "astro.config.mjs").write_text(
+                'import tina from "@tinacms/astro/integration";\n'
+                'import { tinaAdminDevRedirect } from "@tinacms/astro/vite";\n'
+                'import node from "@astrojs/node";\n'
+                'export default { integrations: [tina()], vite: { plugins: [tinaAdminDevRedirect()] }, adapter: node({ mode: "standalone" }) };\n'
+            )
+            (project / "tina").mkdir()
+            (project / "src/content/pages").mkdir(parents=True)
+            (project / "tina/config.ts").write_text(
+                'import { AbstractAuthProvider, defineConfig } from "tinacms";\n'
+                'class PasswordAuthProvider extends AbstractAuthProvider { authenticate(){} getUser(){ return fetch("/api/tina/auth-check") } getToken(){ return { id_token: "" } } logout(){ return fetch("/api/tina/logout", { method: "POST" }) } }\n'
+                'export default defineConfig({ clientId: null, token: null, authProvider: new PasswordAuthProvider(), contentApiUrlOverride: "/api/tina/gql", build: { outputFolder: "admin", publicFolder: "." }, schema: { collections: [{ name: "page", path: "src/content/pages", format: "md", ui: { router: () => "/" }, fields: [] }] } });\n'
+            )
+            (project / "src/pages/api/tina").mkdir(parents=True)
+            (project / "src/pages/api/tina/[...routes].ts").write_text(
+                'export const prerender = false;\n'
+                'const SESSION_COOKIE = "tina_admin_session";\n'
+                'function PasswordBackendAuthProvider() { return { isAuthorized: async () => ({ isAuthorized: true }) }; }\n'
+                'export const POST = "/api/tina/login";\nexport const LOGOUT = "/api/tina/logout";\nexport const CHECK = "/api/tina/auth-check";\n'
+            )
+            # Decoupled block component: reads content + renders plainly; no overlay.
+            (project / "src/components/blocks").mkdir(parents=True)
+            (project / "src/components/blocks/Hero.astro").write_text(
+                '---\nconst { heading } = Astro.props;\n---\n<section><h1>{heading}</h1></section>\n'
+            )
+            result = subprocess.run(
+                ["python3", str(ROOT / "validate-pipeline.py"), "--phase", "build", ".", "--pipeline-dir", "pipeline/"],
+                cwd=project, text=True, capture_output=True,
+            )
+            # The overlay contract must be gated off in admin-blocks mode.
+            self.assertNotIn("data-tina-field", result.stdout)
+            self.assertNotIn("requestWithMetadata", result.stdout)
+
+    def test_frontend_builder_defaults_to_admin_blocks_editing(self) -> None:
+        text = (AGENTS / "frontend-builder.md").read_text()
+        self.assertIn("editing_mode: admin-blocks", text)
+        self.assertIn("references/decoupled-blocks", text)
+        self.assertIn("no in-page editing runtime", text)
+
     def test_tina_blueprint_generator_creates_unique_ids_for_repeated_section_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

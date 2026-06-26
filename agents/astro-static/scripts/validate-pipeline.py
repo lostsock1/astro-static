@@ -1490,7 +1490,15 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
 
     validate_instagram_content_image_handoff(pipeline_dir, phase_name, issues)
     validate_instagram_video_background_handoff(pipeline_dir, phase_name, issues)
-    validate_tina_coverage_contract(pipeline_dir, phase_name, issues)
+    # editing_mode gates the in-page visual-editing (overlay) contract.
+    # admin-blocks (default for new sites) = decoupled: Astro reads markdown,
+    # editing via the Tina admin blocks field, no overlay. overlay (legacy) =
+    # data-tina-field / tina-island / requestWithMetadata click-to-edit.
+    # Default is overlay so legacy projects + fixtures keep the strict contract.
+    _blueprint_doc = _load_pipeline_json(pipeline_dir / '01-tina-blueprint.json')
+    overlay_mode = not (isinstance(_blueprint_doc, dict) and _blueprint_doc.get('editing_mode') == 'admin-blocks')
+    if overlay_mode:
+        validate_tina_coverage_contract(pipeline_dir, phase_name, issues)
 
     # ── Instagram extraction validation ───────────────────────────────
     if phase_name == 'instagram':
@@ -1642,17 +1650,18 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                 ]:
                     if needle not in astro_content:
                         issues.append(Issue('error', 'astro.config.mjs', f'missing {label}'))
-            if not island_route.exists():
-                issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'missing Tina visual editing island route'))
-            else:
-                island_content = island_route.read_text()
-                if 'export const ALL' in island_content or 'export const POST' not in island_content:
-                    issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'Tina visual editing island route must export POST, not ALL'))
-                imports_island_registry = re.search(r'import\s+\{?\s*islands\b', island_content) is not None
-                has_inline_island_fetch = re.search(r'\bislands\s*=\s*\{[\s\S]*\bfetch\s*:', island_content) is not None
-                has_empty_registry = re.search(r'\bislands\s*=\s*\{\s*\}', island_content) is not None
-                if has_empty_registry or not (imports_island_registry or has_inline_island_fetch):
-                    issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'Tina visual editing island registry appears empty; register at least one island with fetch/component/wrapper/propsFromData so bridge refreshes editable regions'))
+            if overlay_mode:
+                if not island_route.exists():
+                    issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'missing Tina visual editing island route'))
+                else:
+                    island_content = island_route.read_text()
+                    if 'export const ALL' in island_content or 'export const POST' not in island_content:
+                        issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'Tina visual editing island route must export POST, not ALL'))
+                    imports_island_registry = re.search(r'import\s+\{?\s*islands\b', island_content) is not None
+                    has_inline_island_fetch = re.search(r'\bislands\s*=\s*\{[\s\S]*\bfetch\s*:', island_content) is not None
+                    has_empty_registry = re.search(r'\bislands\s*=\s*\{\s*\}', island_content) is not None
+                    if has_empty_registry or not (imports_island_registry or has_inline_island_fetch):
+                        issues.append(Issue('error', 'src/pages/tina-island/[name].ts', 'Tina visual editing island registry appears empty; register at least one island with fetch/component/wrapper/propsFromData so bridge refreshes editable regions'))
             if not api_route.exists():
                 issues.append(Issue('error', 'src/pages/api/tina/[...routes].ts', 'missing Tina self-hosted GraphQL route'))
             else:
@@ -1678,24 +1687,29 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                     except UnicodeDecodeError:
                         continue
             all_source = '\n'.join(source_texts)
-            if 'requestWithMetadata' not in all_source:
-                issues.append(Issue('error', 'src/lib/tina', 'maximum TinaCMS visual editing requires requestWithMetadata() data loaders'))
-            if 'tinaField' not in all_source or 'data-tina-field' not in all_source:
-                issues.append(Issue('error', 'src/components', 'maximum TinaCMS visual editing requires tinaField() + data-tina-field click-to-edit markers on visible editable DOM nodes'))
-            for source_path in project_source_files:
-                if source_path.suffix != '.astro':
-                    continue
-                try:
-                    page_source = source_path.read_text()
-                except UnicodeDecodeError:
-                    continue
-                if 'astro:content' in page_source and 'requestWithMetadata' not in page_source:
-                    rel = str(source_path.relative_to(project_root))
-                    issues.append(Issue('error', rel, 'Astro content-backed Tina page must call requestWithMetadata() in the page data loader; a re-export in src/lib/tina/data.ts does not register this page with the admin'))
+            if overlay_mode:
+                if 'requestWithMetadata' not in all_source:
+                    issues.append(Issue('error', 'src/lib/tina', 'maximum TinaCMS visual editing requires requestWithMetadata() data loaders'))
+                if 'tinaField' not in all_source or 'data-tina-field' not in all_source:
+                    issues.append(Issue('error', 'src/components', 'maximum TinaCMS visual editing requires tinaField() + data-tina-field click-to-edit markers on visible editable DOM nodes'))
+                for source_path in project_source_files:
+                    if source_path.suffix != '.astro':
+                        continue
+                    try:
+                        page_source = source_path.read_text()
+                    except UnicodeDecodeError:
+                        continue
+                    if 'astro:content' in page_source and 'requestWithMetadata' not in page_source:
+                        rel = str(source_path.relative_to(project_root))
+                        issues.append(Issue('error', rel, 'Astro content-backed Tina page must call requestWithMetadata() in the page data loader; a re-export in src/lib/tina/data.ts does not register this page with the admin'))
             validate_tina_tsconfig(project_root, issues)
             if phase_name == 'final' or require_all:
                 validate_tina_admin_artifacts(project_root, issues)
-            validate_tina_editable_surfaces(project_root, project_source_files, issues)
+            # Overlay-only: data-tina-field markers on every editable img/text node.
+            # admin-blocks renders content fields plainly (editing is in the admin),
+            # so these in-page markers don't apply.
+            if overlay_mode:
+                validate_tina_editable_surfaces(project_root, project_source_files, issues)
     elif phase_name in {'build', 'final'} or require_all:
         issues.append(Issue('error', 'package.json', f'missing file: {package_json}'))
 

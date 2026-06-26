@@ -17,6 +17,10 @@
     "schema_version": {
       "const": "astro-static-tina-blueprint/v1"
     },
+    "editing_mode": {
+      "enum": ["admin-blocks", "overlay"],
+      "description": "admin-blocks (default): decoupled — Astro reads markdown, editing via the Tina admin blocks field, no in-page overlay. overlay (legacy): data-tina-field / tina-island / requestWithMetadata click-to-edit. Validator gates the overlay contract on this."
+    },
     "project_name": {
       "type": "string",
       "minLength": 1

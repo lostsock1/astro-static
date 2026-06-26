@@ -276,7 +276,7 @@ This repo is the **single source of truth** — no duplicated copies. `sync.sh` 
 
 ## 🛡️ Fail-closed validation
 
-`validate-pipeline.py` is the enforcement layer — ~40 checks across six phase gates, backed by **112 regression tests** that encode real failures found in live runs. It rejects, among many others:
+`validate-pipeline.py` is the enforcement layer — ~40 checks across six phase gates, backed by **115 regression tests** that encode real failures found in live runs. It rejects, among many others:
 
 - a Tina blueprint that's missing before assets/codegen, or missing settings/nav/footer fields
 - visible text with no Tina field marker, or media paths not backed by a Tina/content/manifest field
@@ -289,7 +289,7 @@ This repo is the **single source of truth** — no duplicated copies. `sync.sh` 
 
 ```bash
 python3 agents/astro-static/scripts/test_regressions.py
-# Ran 112 tests — OK
+# Ran 115 tests — OK
 ```
 
 <details>
@@ -317,7 +317,7 @@ The schemas, validators, agent prompts, references, and regression tests are **o
 
 ```bash
 # full pre-publish check
-python3 agents/astro-static/scripts/test_regressions.py        # 112 tests
+python3 agents/astro-static/scripts/test_regressions.py        # 115 tests
 S=agents/astro-static/scripts
 python3 -m py_compile $S/validate-pipeline.py $S/test_regressions.py $S/phases/tina-blueprint.py
 bash -n $S/setup-vps.sh $S/bg-bootstrap.sh

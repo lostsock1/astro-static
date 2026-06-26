@@ -485,6 +485,11 @@ def generate_blueprint(brief: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "schema_version": SCHEMA_VERSION,
+        # Decoupled-blocks editing: the published Astro site reads markdown
+        # directly (no Tina client, no in-page overlay); editing happens in the
+        # Tina admin via the blocks field. See references/decoupled-blocks/.
+        # "overlay" (legacy) restores data-tina-field / tina-island / requestWithMetadata.
+        "editing_mode": "admin-blocks",
         "project_name": brief.get("project_name") or slugify(str(brief.get("client_name") or "site")),
         "settings": settings,
         "pages": pages,
