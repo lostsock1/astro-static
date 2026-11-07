@@ -252,4 +252,8 @@ Example `_clarifications` entry:
 "The brief names 'Nina' as a KATSEYE member. KATSEYE has six members: Sophia, Manon, Daniela, Lara, Megan, Yoonchae. No member named Nina exists. Used 'MEMBER_TBD' as placeholder — orchestrator should confirm intended member before proceeding to Phase 3."
 ```
 
-The orchestrator's Phase 2.5 gate reads these fields and halts the pipeline until a human responds. Accurate flagging prevents wasted downstream work.
+The orchestrator's Phase 2.5 gate halts for genuine factual ambiguity, rights,
+essential missing media or required approvals, not merely for advisory findings.
+Warnings/advisories use non-blocking severity and a tracked follow-up with owner
+and next action; do not set `_requires_human_confirmation` for those alone.
+Never invent business facts, contact details, rights or approvals to clear a blocker.

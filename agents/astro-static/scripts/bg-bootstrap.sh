@@ -35,13 +35,11 @@ if [[ -z "$GITEA_PASS" ]]; then
   chmod 600 "$VPS_JSON"   # password is now inside — keep it owner-only
 fi
 
-# Clear stale host key if the VPS was reinstalled (changed fingerprint).
-# Without this, SSH refuses to connect with "REMOTE HOST IDENTIFICATION HAS CHANGED".
-# ssh-keygen -R is idempotent and safe — it only removes the specific host entry.
-ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$HOST" 2>/dev/null || true
+# Never remove known host keys here. A changed key must stop automation until
+# the operator verifies the fingerprint and approves removal in the wizard.
 
 _astro_static_ssh() {
-  ssh -p "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$USR@$HOST" "$@"
+  ssh -p "$PORT" -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$USR@$HOST" "$@"
 }
 SSH=_astro_static_ssh
 
@@ -55,7 +53,7 @@ echo "=== Bootstrap started $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" > "$PROJECT_DIR/
 # idempotent by uploading the canonical script when available.
 SETUP_SRC="${ASTRO_STATIC_SETUP_VPS:-$HOME/.config/opencode/astro-static/setup-vps.sh}"
 if [[ -f "$SETUP_SRC" ]]; then
-  scp -P "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new \
+  scp -P "$PORT" -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "$SETUP_SRC" "$USR@$HOST:/tmp/setup-vps.sh" \
     >> "$PROJECT_DIR/pipeline/bootstrap.log" 2>&1 \
     || { echo "STATUS:BOOTSTRAP_SETUP_UPLOAD_FAILED src=$SETUP_SRC" >> "$PROJECT_DIR/pipeline/bootstrap.log"; exit 1; }
@@ -101,7 +99,7 @@ trap cleanup_wrapper EXIT
   printf '%s\n' 'bash /tmp/setup-vps.sh > /tmp/setup-vps.log 2>&1'
 } > "$LOCAL_WRAPPER"
 
-scp -P "$PORT" -i "$KEY" -o StrictHostKeyChecking=accept-new \
+scp -P "$PORT" -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   "$LOCAL_WRAPPER" "$USR@$HOST:/tmp/pipeline-setup-wrapper.sh" \
   >> "$PROJECT_DIR/pipeline/bootstrap.log" 2>&1 \
   || { echo "STATUS:BOOTSTRAP_SETUP_UPLOAD_FAILED src=setup-wrapper" >> "$PROJECT_DIR/pipeline/bootstrap.log"; exit 1; }
@@ -134,6 +132,7 @@ while [[ "$WAIT_ATTEMPT" -lt "$WAIT_MAX" ]] && [[ "$WAITED_TOTAL" -lt "$WAIT_BUD
   # ServerAliveInterval keeps the connection alive during apt-get's silent stretches.
   # Remote loop exits as soon as the exit file exists OR the budget elapses.
   ssh -p "$PORT" -i "$KEY" \
+      -o BatchMode=yes \
       -o StrictHostKeyChecking=accept-new \
       -o ConnectTimeout=10 \
       -o ServerAliveInterval=30 \

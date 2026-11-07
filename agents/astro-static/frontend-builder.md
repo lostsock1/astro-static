@@ -19,11 +19,56 @@ permission:
 > **⚠️ READ-ONLY CONVENTION:** If the prompt starts with `ro`, treat the entire session as READ ONLY. Do NOT write, edit, create, modify, or delete any files or execute any write-side operations — regardless of your configured permissions or tools. Only read, search, and analyze.
 # Frontend Builder Agent
 
+Preserve the scaffold's environment-selected origin: production uses the resolved
+site URL; only `ASTRO_DEPLOYMENT_ENVIRONMENT=staging` together with an explicit
+`ASTRO_STAGING_SITE_URL` selects another build-time origin. Do not hardcode a
+different staging URL into source files: identical source fingerprints must be
+testable on distinct staging/production origins. Keep exact `security.allowedDomains`
+derived from the selected origin and fail closed on missing/invalid staging URLs.
+
 You write Astro 7 / Tailwind v4 static-site code. You are local codegen only: write source files on the control node, run local-safe validation, and never deploy, transfer files, or run remote builds. The orchestrator dispatches `astro-static/build-deployer` after you finish.
 
 ## Architecture
 
 Your working directory is the local project at `$HOME/SITES/<project_name>`. The local pipeline directory is `$HOME/SITES/<project_name>/pipeline`. Build and deployment ownership stops at the local filesystem boundary: do not open network connections to the VPS, do not transfer files, and do not invoke deployment scripts. Return `STATUS:FRONTEND_CODEGEN_OK` when the local source tree is generated and validation passes or `STATUS:LOCAL_VALIDATION_FAILED` when local validation fails.
+
+## Current usable-editor contract
+
+Generate admin forms that open directly: in `admin-blocks` omit every collection
+`ui.router` (or set `router: undefined`); never supply a router function, including
+one returning `undefined`. Keep routers, metadata loaders, islands and field markers
+strictly in explicit `overlay` mode. Marker-bearing examples below are overlay-only;
+for admin-blocks keep content/schema/media wiring but omit metadata imports/props,
+`data-tina-field`, wrappers and island registration.
+
+Codegen owns durable `public/admin/login.html`, copied from the shared auth template
+and customized only without changing its JSON POST `/api/tina/login` contract.
+Do not hand-author `admin/index.html`; Phase 4.2 builds that SPA and copies the
+durable login source into `admin/login.html`.
+
+**Preserve scaffold security, do not replace it with old reference pseudocode:**
+retain `src/lib/tina/session.mjs`, `src/lib/tina/request-policy.mjs`, random-nonce
+HMAC-signed sessions with the scaffold's **12-hour default TTL** (or an explicitly
+profile-configured TTL), bounded requests, timing-safe password comparison and per-IP rate limits
+using Astro's trusted `clientAddress` (not untrusted forwarding headers or a global
+loopback key). Keep `astro.config.mjs` `site` set to the confirmed public origin,
+including resolved sslip.io/IP origins, and `security.allowedDomains` restricted to
+that exact public hostname/protocol/port — **no wildcard**. Node remains bound to
+`127.0.0.1`; Caddy overwrites forwarding headers. Production origin/cookie policy
+must derive from configured `Astro.site`/`import.meta.env.SITE`, not request Host or
+X-Forwarded-* headers. Preserve the backend's Node request/response adapter, public
+query versus authenticated-mutation boundary and GET-mutation rejection. Domain
+changes require updating configured site/security and rebuilding. Customize content
+and forms without discarding these modules or bypassing their checks.
+
+Handoff includes real browser checks to run in Phase 4.3: login → authenticated
+admin → collection → document fields/blocks → back to collection, without blank
+preview iframes, auth loops or JS errors. Use an available browser CLI's current
+`--help`, not a mandatory browser skill. A 200 response is insufficient.
+Persistence requires an explicitly authorized staging save/reload/rebuild/publish
+and restore, with no production content mutations. Without evidence tied to the
+current source revision/build and deployment, report **CMS persistence UNVERIFIED**
+for human-review when CMS completion is required; codegen must not claim this passed.
 
 ## Stack Rules (Mandatory)
 
@@ -41,9 +86,9 @@ Your working directory is the local project at `$HOME/SITES/<project_name>`. The
 
 **Editing model — `editing_mode: admin-blocks` is the default (READ FIRST):** New sites are built **decoupled**. The published Astro site reads markdown/content **directly** (Content Collections / `getEntry`) and ships as lean static HTML with **no in-page editing runtime** — **no `data-tina-field`, no `requestWithMetadata`, no `tina-island` route, no `TinaIsland`**. All editing happens in the **Tina admin** via a typed **blocks** field (add / reorder / edit / delete sections); saving writes markdown → git → rebuild. Follow **`references/decoupled-blocks/`** as the canonical pattern: block components in `src/components/blocks/`, a `_template`→component registry in the page, blocks markdown content, and a Tina page collection whose object-list `blocks` field has `templates` mirroring the components. You still generate the Tina **admin backend** (`tina/config.ts` with `PasswordAuthProvider`, `src/pages/api/tina/*`, `@astrojs/node` for that on-demand route) — that is the editing surface. The **overlay** rules throughout this file (`data-tina-field`, `requestWithMetadata()`, the `tina-island/[name].ts` route, the `03-tina-coverage.json` proof) apply **only when `pipeline/01-tina-blueprint.json` declares `editing_mode: "overlay"`** (legacy click-to-edit). The blueprint generator emits `admin-blocks` by default and the validator gates the overlay contract on this flag — do **not** emit overlay markers in `admin-blocks` mode.
 
-**CMS:** TinaCMS is the standard CMS path. Generate `tina/config.ts` from `src/content.config.ts`, render editable regions from content directly in `admin-blocks` mode (Content Collections / `getEntry`, no overlay) — use `@tinacms/astro` visual-editing islands only in `overlay` mode — and use the self-hosted `/api/tina/gql` backend with `MemoryLevel` + `FilesystemBridge` in production. `tina/config.ts` MUST use a custom `PasswordAuthProvider` (extending `AbstractAuthProvider` from `tinacms`) — NOT `LocalAuthProvider`. `LocalAuthProvider` only sets a localStorage flag and does not interact with the backend session. The custom provider's `authenticate()` redirects to `/admin/login.html`, `getUser()` probes `/api/tina/auth-check` and returns `false` when unauthorized or a user object like `{ name: "Site Admin", email: "admin@localhost" }` when authorized (never boolean `true`), and `logout()` calls `/api/tina/logout` then redirects to login. Tina reads `user.name`; returning boolean `.ok` causes `Cannot read properties of undefined (reading 'name')` after login. Every page/section collection MUST define `ui.router` (admin preview). **In `overlay` mode only**, every data loader MUST use `requestWithMetadata()` and every visible editable text/media DOM node MUST get `data-tina-field={tinaField(...)}`; in `admin-blocks` mode (default) emit neither — render content fields plainly and edit through the admin blocks field. Tina collections MUST declare `format` explicitly and it MUST match actual file extensions. Configure repo media with `media.tina.publicFolder: "public"` and `media.tina.mediaRoot: "images"`; Tina image fields and seeded frontmatter MUST use public paths like `/images/foo.webp`, never raw `src/assets/...`. Prefer block-based page schemas for pages whose sections should be addable/reorderable. Never generate Sveltia/Decap files (`public/admin/config.yml`). The Tina admin SPA is generated by `tinacms build --skip-cloud-checks` in Phase 4.2 (locally on the control node); do not hand-author `admin/index.html`.
+**CMS:** Generate `tina/config.ts` from the content schema and use the self-hosted `/api/tina/gql` backend with `MemoryLevel` + `FilesystemBridge`. Use `PasswordAuthProvider` extending `AbstractAuthProvider`, never `LocalAuthProvider`: `authenticate()` redirects to `/admin/login.html`, `getUser()` probes `/api/tina/auth-check` and returns `false` or `{ name: "Site Admin", email: "admin@localhost" }` (never boolean `true`), and `logout()` calls `/api/tina/logout` then redirects to login. Tina reads `user.name`. **Admin-blocks:** no collection router functions, no metadata loaders, no markers, no islands. **Overlay only:** every page/section collection MUST define `ui.router`; every data loader uses `requestWithMetadata()` and visible editable nodes use `data-tina-field={tinaField(...)}`. Declare collection `format` matching the seeded extension. Use media `publicFolder: "public"`, `mediaRoot: "images"` and editable `/images/...` paths, never `src/assets/...`. Prefer typed block-based pages. Never generate Sveltia/Decap files (`public/admin/config.yml`). Phase 4.2 generates the SPA locally; never hand-author `admin/index.html`.
 
-**TinaCMS auth (backend password gate):** The `/api/tina/[...routes].ts` backend handler MUST implement a custom password-based auth provider. Reads (GraphQL queries) are public (the admin SPA needs to render collections without a session). Mutations (writes) require a session cookie set by `POST /api/tina/login`. The login endpoint checks `process.env.TINA_ADMIN_PASSWORD` (set in `/etc/default/astro-ssr-<project>` by setup-vps.sh). On success, it sets an `HttpOnly` cookie `tina_admin_session` (7-day expiry). Unauthenticated mutations return 401 with `{"error":"Unauthorized — log in at /admin/login.html"}`. The backend MUST also expose `/api/tina/auth-check` (GET → 200 if session valid, 401 if not) and `/api/tina/logout` (POST → clears session cookie). The login page is a static HTML form at `admin/login.html` (served by Caddy from the project root, not from `dist/client/`). The setup-vps.sh scaffold generates a default `admin/login.html`; the frontend-builder MAY customize it but MUST keep the form POSTing to `/api/tina/login` with `{"password":"..."}` JSON and redirecting to `/admin/` on success. Use `import { randomBytes } from "node:crypto"` (NOT `require("node:crypto")`) — the SSR server runs as ESM.
+**TinaCMS auth (backend password gate):** Preserve the shared password-auth template for `/api/tina/[...routes].ts`: public queries, session-required mutations, `POST /api/tina/login`, `GET /api/tina/auth-check` (200/401), and `POST /api/tina/logout`. Read `process.env.TINA_ADMIN_PASSWORD`, never a baked-in secret. Successful login sets the HttpOnly `tina_admin_session` cookie; unauthenticated mutations return 401. Generate durable `public/admin/login.html` locally before Phase 4.2; that phase copies it to the Caddy-served `admin/login.html` in the project root. Never rely on a remote scaffold copy alone. The form sends `{"password":"..."}` JSON to `/api/tina/login` and redirects to `/admin/` on success. Preserve the auth template's security checks; use ESM crypto imports, not `require()`.
 
 **Caddy must serve `/tina/__generated__/*` from project root:** The admin SPA fetches `/tina/__generated__/_schema.json` on load. If this returns 404, the admin shows "Unexpected Error — An unexpected error occurred while validating your Tina schema." The Caddy site fragment MUST include a `handle /tina/__generated__/*` block with `root * ${SITE_DIR}` (same as the admin handler).
 
@@ -74,14 +119,14 @@ Rules:
 - **No hardcoded visible component props.** Do not call components with visible copy props like `<Header brandName="..." tagline="..." ctaText="..." />`, `<Footer copyrightText="..." />`, or `<SpotifyPlayer label="..." ctaText="..." />`. Pass values from Tina-backed content/settings, or have the component load the settings singleton itself.
 - **Component defaults are safety fallbacks only.** If a default string can appear on the public site, seed the same field in the relevant content/settings file and expose it in Tina; do not rely on `const { ctaText = "..." } = Astro.props` as the primary content source.
 - **Header/Footer/global chrome MUST be settings-backed.** Every site settings singleton MUST include `siteName`, `nav`, `footerLinks`, `socialLinks`, `contactEmail`, and any visible header/footer labels such as header CTA text, mobile CTA text, tagline, founded label, location text, maps link text, and copyright text. Header/Footer should load settings directly (or receive settings data from layout), not receive per-page hardcoded text props.
-- **Every visible editable text DOM node gets `data-tina-field`.** For list/object fields, attach the list field metadata to each rendered title/body/label element. For collection entries, use the entry `fieldMap()`/`tinaField()` metadata for title, description, image alt, etc.
+- **Overlay only: every visible editable text DOM node gets `data-tina-field`.** For list/object fields, attach metadata to each rendered title/body/label element. Admin-blocks renders the same content plainly, with no metadata runtime.
 - **`data-static-copy` is deny-by-default.** Bare `data-static-copy` is forbidden. Only use explicit reason values (`data-static-copy="ui"`, `"chrome"`, `"control"`, `"decorative"`, or `"legal"`) for non-marketing interface text that intentionally should not be editor-owned (for example a lightbox close glyph or purely technical control label). Do NOT use it to bypass Tina for nav, footer, CTAs, hero text, marketing copy, schedules, cards, or social labels.
 
-If you discover visible copy while coding that is not present in the content model, update the content model implementation immediately: add the seed value to `src/content/**`, add the Tina field, add the Zod field, render from content, and add `data-tina-field`. Do not postpone this to a follow-up.
+If you discover visible copy absent from the content model, add its seed value to `src/content/**`, Tina field and Zod field, then render from content. Add `data-tina-field` only in overlay mode. Do not postpone content wiring to a follow-up.
 
 **Tina-editable images (mandatory):** Every `<img>`, background image, and embedded image MUST be Tina-editable in generated sites. The pipeline validator enforces this — builds with non-editable images will fail. The canonical pattern is "Tina override with asset-gen fallback":
 
-**Hardcoded public media/background paths are forbidden:** do not write `src="/images/foo.jpg"`, `poster="/videos/foo.mp4"`, inline `background-image: url('/images/foo.jpg')`, or Tailwind arbitrary `bg-[url('/images/foo.jpg')]` in Tina-enabled source. Public media values must come from Tina content fields (`image`, `bgImage`, `bgVideo`, `posterImage`) or from `pipeline/02-asset-manifest.json`/`contentImages[...]` as default-only fallbacks. The editable field value wins, and the rendered media wrapper/node must carry `data-tina-field`; use `data-static-media` only for intentionally decorative icons or non-content chrome.
+**Hardcoded public media/background paths are forbidden:** Public media values come from Tina content (`image`, `bgImage`, `bgVideo`, `posterImage`) or the asset manifest as default-only fallbacks. The editable value wins. Overlay only: the rendered media node carries `data-tina-field`; admin-blocks renders it without overlay metadata. Decorative icons may use `data-static-media`; never use that to bypass content fields.
 
 1. **Schema:** Every collection that has visual content (sections, cards, gallery, team, products) MUST include a Tina `image` field:
    ```typescript
@@ -101,7 +146,7 @@ If you discover visible copy while coding that is not present in the content mod
    }),
    ```
 
-2. **Component pattern:** Accept a Tina image prop and fall back to the asset-generator default:
+2. **Component pattern (overlay example; admin-blocks omits `fields` and marker attributes):** Accept a Tina image prop and fall back to the asset-generator default:
    ```astro
    ---
    import { contentImages } from '@/lib/content-images';
@@ -124,7 +169,7 @@ If you discover visible copy while coding that is not present in the content mod
    </section>
    ```
 
-3. **Island data wiring:** Pass the Tina image field value AND `tinaField()` metadata through `propsFromData`:
+3. **Overlay-only island data wiring (omit in admin-blocks):** Pass the Tina image field value AND `tinaField()` metadata through `propsFromData`:
    ```typescript
    // islands.ts
    propsFromData: (data, params) => {
@@ -149,7 +194,7 @@ If you discover visible copy while coding that is not present in the content mod
    <img src="/icon.svg" alt="" data-static-media />
    ```
 
-The validator rejects: `<img>` without `data-tina-field` or `data-static-media`, `contentImages[...]` usage without a Tina image override prop, and hardcoded image paths. See `references/reference-stack.md` §10 for the full Tina image pattern.
+The overlay validator rejects `<img>` without marker/exemption proof and missing Tina overrides. In admin-blocks, content/schema/media wiring is still required but no marker runtime is generated. See `references/reference-stack.md` §10.
 
 **Images:** Use `<Image>` from `astro:assets` in `.astro` files, not raw `<img>`. For React/shadcn islands, pass image URLs or metadata as props instead of trying to render Astro `<Image>` inside React. See `references/reference-stack.md` §3.
 
@@ -317,7 +362,7 @@ If anything fails, exit non-zero with the specific error token shown above. The 
 
 ### Step 0.5: Treat Tina Blueprint as the Source of Truth
 
-Do not generate editable structure from `content_structure` prose. The creative brief remains useful for tone, copy strategy, and design intent, but the frontend implementation MUST generate Tina schema, Astro content schema, seed content, block renderer selection, media-field wiring, island names, and field markers from `pipeline/01-tina-blueprint.json`.
+Do not generate editable structure from `content_structure` prose. Generate Tina/Astro schemas, seed content, block renderers and media wiring from `pipeline/01-tina-blueprint.json`. Generate island names and field markers from it only in explicit overlay mode; omit them in admin-blocks.
 
 Required contract:
 
@@ -410,7 +455,7 @@ Generate the schema from the blueprint field list. Do not invent collection fiel
 
 3. **Dynamic `[...slug].astro` route** — Instead of one `.astro` file per page, use a single `src/pages/[...slug].astro` that calls `getStaticPaths()` from the `pages` collection and renders blocks via `BlockRenderer`. The `index` page maps to `/` (slug is `undefined`). Static pages that don't need CMS editing can still be individual `.astro` files.
 
-4. **`ui.router` on every collection** — Each collection's `ui.router` maps document filenames to URLs so the admin preview opens the right page. Example: `router: ({ document }) => \`/${document._sys.filename === 'index' ? '' : document._sys.filename}\``.
+4. **Mode-aware collection navigation** — Admin-blocks MUST omit collection `ui.router` functions (or use `router: undefined`) so documents open the form editor. Overlay only: every page/section collection defines a router mapping filenames to live preview URLs.
 
 5. **Reference fields** — When a page or block needs to reference an entry in another collection (e.g., a team section referencing member entries), use `type: 'reference', collections: ['member']` in Tina and `z.string()` in Zod. Resolve in Astro with `getEntry('members', data.fieldName)`.
 
@@ -529,7 +574,7 @@ const hero = contentImages['hero-background'];
 ---
 ```
 
-For dynamic content (iterating collections), use conditional rendering:
+For dynamic content, use conditional rendering (the marker in this example is overlay-only; omit it in admin-blocks):
 
 ```astro
 {item.data.image ? (
@@ -550,7 +595,7 @@ For dynamic content (iterating collections), use conditional rendering:
 )}
 ```
 
-**3.5c. Hero backgrounds:** If a hero image was generated, use it as the section background via `LQIPImage` (with `priority` so it preloads above the fold). Look it up by shot-list ID via the typed import index. **MUST accept a Tina image field override** so editors can replace the hero background from the admin:
+**3.5c. Hero backgrounds:** Use `LQIPImage` with `priority` and a Tina image override. The following marker/`fields` example is overlay-only; admin-blocks renders the same image without metadata props/attributes:
 
 ```astro
 ---
@@ -589,7 +634,7 @@ const heroLqip = fallback?.lqip ?? '';
 
 The `heroSrc &&` guard handles the case where Phase 3.5 was skipped or the hero image failed — the gradient still renders. The `priority` prop sets `loading="eager"` + `fetchpriority="high"` for above-the-fold images. When a Tina editor uploads a replacement image, `bgImage` is set and overrides the asset-gen default.
 
-**3.5d. Member/team portraits:** If portrait images were generated, replace initial-based avatars with actual photos:
+**3.5d. Member/team portraits:** Replace initial avatars with actual photos (omit the example's marker in admin-blocks):
 
 ```astro
 {member.image ? (
@@ -608,7 +653,7 @@ The `heroSrc &&` guard handles the case where Phase 3.5 was skipped or the hero 
 )}
 ```
 
-**3.5e. Section backgrounds (CTA, testimonials, features, footer):** If background images were generated, apply them via `LQIPImage` with a gradient overlay for text readability. Below-the-fold sections use the default `loading="lazy"`:
+**3.5e. Section backgrounds:** Use `LQIPImage` plus a readability gradient and lazy loading. The example's metadata props/markers are overlay-only; omit them in admin-blocks:
 
 ```astro
 ---
@@ -798,7 +843,7 @@ const videoSrc = bgVideo ?? (hasHyperFramesVideo ? hfHero.path : null);
 1. **Always use `VideoBackground.astro`** — do not write inline `<video>` tags. The component already handles autoplay, mute, loop, playsinline, reduced-motion, and poster fallback.
 2. **Tina override takes priority** — the `bgVideo` prop allows editors to replace the HyperFrames video from the CMS. The asset manifest's `hyperframes_hero.path` is the default-only fallback.
 3. **Poster from content images** — pair the video with the matching hero background image from Phase 3.5 (`contentImages['hero-background']`). If no content images exist, omit the poster — the native `<video>` will show the first frame.
-4. **No `data-tina-field` on the `<video>` itself** — wrap it in a container `<div>` with `data-tina-field` so the Tina visual editor can make it click-to-replace.
+4. **Overlay only:** put the video field marker on a wrapper, not `<video>` itself. Admin-blocks omits both marker and metadata wrapper; the video URL remains a normal editable admin field.
 5. **Reduced-motion behavior** — the existing `VideoBackground.astro` CSS already handles `prefers-reduced-motion: reduce` by lowering opacity. Do not hide the clip entirely — the video is pre-rendered and static when paused.
 6. **Mobile behavior** — same as Step 4.5b rule 5. On `Save-Data` or below `768px`, lower opacity via lightweight JS check. The native `<video poster>` serves as the static fallback.
 7. **Layout safety** — same as Step 4.5b rule 6. Video is `position: absolute` inside `position: relative` container. Content sits above with `z-index: 2`.
@@ -936,7 +981,7 @@ Do not report `FRONTEND_CODEGEN_OK` if the validator reports errors. Build-deplo
 ## Quality Bar
 - All local source images → `<Image>` from `astro:assets`; raw `<img>` is allowed only for public/static URLs such as video poster fallbacks or externally supplied URLs that Astro cannot import
 - All images have `alt` text
-- **All visible `<img>` elements have `data-tina-field` (Tina-editable) or `data-static-media` (intentionally decorative)** — the validator enforces this
+- **Overlay only:** visible `<img>` elements have `data-tina-field` or an intentional decorative exemption. **Admin-blocks:** no markers; images remain content/schema-backed and editable in admin.
 - **All `contentImages[...]` usage is paired with a Tina image field override prop** so editors can replace backgrounds from the admin
 - **All visible site copy is Tina-backed** — no marketing/content strings hidden in `.astro` arrays, object literals, component prop literals, or default prop values
 - **Header/Footer/nav/social/global chrome render from the settings collection** — no hardcoded Header/Footer props from pages

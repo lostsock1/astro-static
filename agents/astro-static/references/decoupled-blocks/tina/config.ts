@@ -16,10 +16,7 @@ export default defineConfig({
         label: "Pages",
         path: "content/pages",
         format: "md",
-        ui: {
-          router: ({ document }) =>
-            document._sys.filename === "home" ? "/" : `/${document._sys.filename}`,
-        },
+        // Omit ui.router so document clicks open the admin form, not an iframe.
         fields: [
           { type: "string", name: "title", label: "Title", isTitle: true, required: true },
           {
@@ -33,7 +30,6 @@ export default defineConfig({
             list: true,
             ui: {
               visualSelector: true,
-              itemProps: (item) => ({ label: `▸ ${item?._template ?? "section"}` }),
             },
             templates: [
               {

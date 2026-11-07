@@ -34,6 +34,7 @@ Treat the seed as input only — never invent business facts. Conduct a friendly
   3. none
   Default **1 (auto)**.
 - Before leaving this stage, run the connection preflight (key file exists + `ssh … "echo STATUS:CONNECT_OK"` with `BatchMode=yes`, `StrictHostKeyChecking=accept-new`, `ConnectTimeout=10`). If the host key changed (reprovisioned VPS), tell the operator and offer to clear the stale `known_hosts` entry. If unreachable, surface it and let the operator fix the host/key before continuing.
+- CMS completion includes a real editor and persistence check. Ask whether the operator has a **separate explicitly authorized staging target** for reversible CMS save/rebuild/publish testing. Do not invent one, auto-authorize it or reuse the live target. If unavailable, preserve that answer: publishing may proceed but CMS persistence stays UNVERIFIED and required CMS completion needs human review. Only upon explicit authorization may staging metadata be supplied, following `references/pipeline-contract.md`.
 
 ### Stage 3 · Brand & references
 - Existing brand assets? `has_logo` / `has_colors` / `has_photography` (+ `assets_paths` if yes) → `existing_brand`.
@@ -42,24 +43,26 @@ Treat the seed as input only — never invent business facts. Conduct a friendly
 
 ### Stage 4 · Instagram (always ask)
 - "Do you have an Instagram account to pull from? Enter the handle (with or without `@`), or say *skip*."
+- On *skip*, persist `instagram_use: "skip"` and omit `instagram_handle` (never save a literal "skip" handle or invent one). Preserve this operator choice on resume; do not infer an account from the business name. An older brief with both fields absent also means no Instagram request.
 - If provided, strip a leading `@` → `instagram_handle`, then ask how to use it (map the answer to `instagram_use`):
   1. **Design reference only** → `design_reference` (tokens/visual style, Phase 1)
   2. **Brand research only** → `brand_research` (voice/positioning, Phase 2)
   3. **Content / photos source** → `content` (real photos become content images, and image-to-video backgrounds)
   4. **Everything — design + brand + content** → `both` *(recommended for image-rich brands)*
-- Tell the operator: scraping runs through the Camoufox-backed `search/instagram` agent; with `content`/`both`, real posts are selected as content images before any AI generation, and animated into video backgrounds via image-to-video.
+- Tell the operator: scraping runs through the Camoufox-backed `search/instagram` agent; with `content`/`both`, real posts are selected as content images before any AI generation. Animate them into image-to-video backgrounds only if background videos are explicitly requested; preserve an explicit no-video choice.
 
 ### Stage 5 · Content
 - `goals` — what the site should achieve.
 - `required_pages` — or let research propose them from the brief.
 
 ### Stage 6 · Confirm & launch
-Echo a compact summary of every collected value and ask **"Proceed? (yes / edit <stage>)"**. On *yes*, write the artifacts, validate, and launch.
+Echo a compact summary of every collected value and ask **"Proceed? (yes / edit <stage>)"**. Disclose `validation_requirements.cms_roundtrip: true` for new CMS sites: without an authorized staging target plus source/deployment-bound editor evidence, CMS persistence remains UNVERIFIED and required CMS completion needs review. Never test persistence by mutating production. On *yes*, write the artifacts, validate, and launch.
 </wizard>
 
 <finalize>
 1. **Project root:** the cwd if it already holds pipeline artifacts, otherwise `$HOME/SITES/<project_name>`. The pipeline directory is always `<root>/pipeline`.
 2. **Write `pipeline/00-brief.json`** with at least `schema_version`, `project_name`, `client_name`, `site_type` — plus every other collected field (`site_category`, `location`, `goals`, `reference_urls`, `competitor_urls`, `domain`, `required_pages`, `existing_brand`, `instagram_handle`, `instagram_use`). Never drop a value the operator gave you.
+   For a new CMS site set `validation_requirements: {"cms_roundtrip": true}` as disclosed at confirmation. Never silently add this requirement to an existing legacy brief on resume. Record staging refusal/absence honestly; do not manufacture an attestation to satisfy validation.
 3. **Write `pipeline/vps-connection.json`** (mode `0600`) with `schema_version`, `project_name`, `ssh_host`, `ssh_port`, `ssh_user`, `ssh_key` (+ `domain` if known).
 4. **Validate before launching:**
    ```bash
@@ -68,5 +71,5 @@ Echo a compact summary of every collected value and ask **"Proceed? (yes / edit 
    python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase startup . --pipeline-dir pipeline/
    ```
 5. **Run the orchestrator flow** to completion or a human-review halt. If a state file already exists, resume rather than restart unless asked to reset.
-6. **Finish with the completion summary** (orchestrator Phase 5): the live Site URL, the credentials handoff, and the full generation report of problems, bugs, gaps, and inefficiencies encountered during the build.
+6. **Finish with the completion summary** (orchestrator Phase 5): the live Site URL, a labeled credentials retrieval/copy command (never a secret value or a field name presented as the password), and the full generation report of problems, bugs, gaps, and inefficiencies encountered during the build.
 </finalize>

@@ -1,10 +1,14 @@
 # Decoupled Blocks — reference architecture for editable static sites
 
-**Status:** Proven prototype (2026-06-25), headless-verified end-to-end. This is the
-**target** pattern for the planned editing migration — it is **NOT yet** what the live
-pipeline scaffolds. As of `astro-static@e22e0a9`, `setup-vps.sh` + `frontend-builder.md`
-still generate the SSR + in-page-overlay (`tina-island` / `data-tina-field`) pattern.
-This folder is the known-good destination the pipeline should converge onto.
+**Status:** Canonical `admin-blocks` architecture for new pipeline sites. The
+measurements below describe the original local prototype, not evidence for any
+new deployment. This folder is a local-development example; production retains
+the password-protected self-hosted admin backend and the Node adapter for it.
+The published pages omit all Tina overlay runtime. Collection `ui.router` MUST
+be omitted (or explicitly `undefined`): even a function returning `undefined`
+switches Tina document clicks toward preview instead of the reliable form editor.
+The typed `blocks` templates use `ui.visualSelector`; template-list `ui.itemProps`
+is unsupported (ordinary object-list fields may still use it).
 
 ---
 
@@ -52,9 +56,11 @@ forms + blocks) does the work; the fragile half (in-page overlay) is gone.
 | Add-a-section | visual block picker → fill → save → `home.md` 3→4 blocks → rebuild includes it, **still 0 JS** |
 | Editing UX | admin shows add `+` / drag-reorder / pencil-edit / trash-delete on the Sections list |
 
-## The parity contract (what the migration's validator should enforce)
+## The parity contract
 
-Replace the old `03-tina-coverage` / `data-tina-field` coverage gate with **blocks parity**:
+For `admin-blocks`, use **blocks parity**, not the overlay-only
+`03-tina-coverage` / `data-tina-field` proof. Verify parity during codegen/review;
+the current validator does not statically prove component/template parity:
 
 - every Astro block component (`src/components/blocks/<T>.astro`) has a **matching Tina
   template** `<T>` (same name; fields ⊇ the props the component reads), and a **registry
@@ -63,6 +69,24 @@ Replace the old `03-tina-coverage` / `data-tina-field` coverage gate with **bloc
 - the built page ships **~0 client JS** (leanness gate);
 - **no** `tina-island`, `data-tina-field`, `requestWithMetadata`, or `TinaIsland` in
   generated source.
+
+Production codegen also creates durable `public/admin/login.html` from the shared
+auth template; Phase 4.2 publishes it as `admin/login.html`. Do not rely on the
+remote bootstrap's copy surviving a later admin build or source sync.
+
+## Current usable-editor evidence
+
+An HTTP 200 or successful build is not an editing test. Use a real browser for
+login → admin → collection → document → actual fields, add/reorder block controls,
+and navigation back to the collection; reject blank iframes, auth loops and console
+errors. Use an available browser CLI following its current `--help`; no particular
+installed browser skill is required.
+
+Prove persistence only with explicit operator-authorized staging: a reversible
+save, fresh reload, file-backed change, rebuild/publish, rendered-value check, then
+restore and verify the original. No production content mutations. Without this
+evidence record **CMS persistence UNVERIFIED** and human-review if CMS completion
+is required. Historical prototype measurements do not clear this gate.
 
 ## Run it
 

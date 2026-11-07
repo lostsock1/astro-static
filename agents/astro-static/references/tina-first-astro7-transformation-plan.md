@@ -1,6 +1,13 @@
 # Plan: Tina-first Astro 7 transformation for astro-static
 
 Created: 2026-06-23
+
+**Historical overlay implementation plan, not the current default contract.**
+New sites use `editing_mode: admin-blocks`: omit router functions, metadata,
+islands and field-marker proof; use typed admin blocks and direct content rendering.
+The mandatory overlay rules in this archived plan apply only to explicit overlay.
+Current instructions are `pipeline-contract.md`, `reference-stack.md` and
+`decoupled-blocks/README.md`; do not use this plan to override those contracts.
 Status: ready for implementation planning/execution in a later session
 Target root: `agents/astro-static/` in the OpenCode config repository
 

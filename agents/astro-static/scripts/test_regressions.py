@@ -696,14 +696,17 @@ class AstroStaticRegressionTests(unittest.TestCase):
     def test_setup_vps_scaffold_uses_latest_astro7_tina_stack(self) -> None:
         text = (ROOT / "setup-vps.sh").read_text()
         for expected in [
-            '"astro": "^7.0.2"',
-            '"@astrojs/node": "^11.0.0"',
-            '"@astrojs/mdx": "^7.0.0"',
-            '"@astrojs/react": "^6.0.0"',
-            '"@tinacms/astro": "^0.5.0"',
-            '"tinacms": "^3.9.3"',
-            '"@tinacms/cli": "^2.5.1"',
-            '"tailwindcss": "^4.3.1"',
+            '"astro": "7.4.7"',
+            '"@astrojs/node": "11.1.11"',
+            '"@astrojs/mdx": "7.0.8"',
+            '"@astrojs/react": "6.0.6"',
+            '"@tinacms/astro": "0.5.1"',
+            '"tinacms": "3.15.1"',
+            '"@tinacms/cli": "2.7.0"',
+            '"@tinacms/datalayer": "2.0.29"',
+            '"@tinacms/graphql": "2.4.11"',
+            '"@emnapi/runtime": "1.11.3"',
+            '"tailwindcss": "4.3.5"',
         ]:
             self.assertIn(expected, text)
         self.assertIn('adapter: node({ mode: "standalone" })', text)
@@ -843,11 +846,15 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertIn("chmod 0755 /usr/local/bin/git-sync-watch", text)
 
     def test_push_gitea_tolerates_ignored_file_advice(self) -> None:
-        # `git add -A -- . :!...` exits 1 (advice) when local gitignored files
-        # like node_modules (left by the Phase 4.2 Tina build) are present, yet
-        # it still stages the real files. Under set -eu that aborts the push.
+        # Ignore advice is avoided by enumerating/filtering NUL-delimited paths;
+        # real staging failures must never be swallowed by blanket `|| true`.
         text = (ROOT / "phases" / "push-gitea.sh").read_text()
-        self.assertIn("':!pipeline/HUMAN_REVIEW.md' || true", text)
+        self.assertIn('git ls-files --cached --others --exclude-standard -z', text)
+        self.assertIn('git ls-files --cached --ignored --exclude-standard -z', text)
+        self.assertIn('p not in ignored', text)
+        self.assertIn('git --literal-pathspecs add -A --pathspec-from-file=', text)
+        self.assertIn('STATUS:PUSH_FAILED reason=staging_failed', text)
+        self.assertNotIn("':!pipeline/HUMAN_REVIEW.md' || true", text)
 
     def test_pipeline_whitelists_control_node_in_fail2ban(self) -> None:
         # the pipeline connects over SSH repeatedly; it must whitelist the
@@ -918,7 +925,64 @@ class AstroStaticRegressionTests(unittest.TestCase):
         self.assertNotIn('X-Frame-Options "DENY"', text)
         self.assertNotIn('export const ALL: APIRoute = experimental_createIslandRoute(islands);', text)
 
+    def _assert_validator_coverage_requirement_respects_editing_mode(self) -> None:
+        validator = self._load_validate_pipeline_module()
+        for mode in ("admin-blocks", "overlay", None):
+            for phase, require_all in (("build", False), ("final", False), (None, True)):
+                with self.subTest(mode=mode, phase=phase, require_all=require_all), tempfile.TemporaryDirectory() as tmp:
+                    project = Path(tmp)
+                    self._write_minimal_pipeline_project(project, "/* deliberately missing theme tokens */")
+                    blueprint_path = project / "pipeline/01-tina-blueprint.json"
+                    blueprint = json.loads(blueprint_path.read_text())
+                    if mode is not None:
+                        blueprint["editing_mode"] = mode
+                    blueprint_path.write_text(json.dumps(blueprint))
+                    (project / "pipeline/03-tina-coverage.json").unlink()
+                    issues, _ = validator.validate_project(project, phase, require_all)
+                    coverage_errors = [i for i in issues if i.artifact == "03-tina-coverage.json" and i.level == "error"]
+                    if mode == "admin-blocks":
+                        self.assertEqual(coverage_errors, [])
+                    else:
+                        self.assertTrue(coverage_errors)
+                    self.assertTrue(any(i.level == "error" and "theme" in i.artifact for i in issues), issues)
+
+    def _assert_tinacms_local_build_island_preflight_respects_editing_mode(self) -> None:
+        for mode in ("admin-blocks", "overlay", None):
+            for route in (None, "export const GET = handler;", "export const POST = handler; export const ALL = handler;", "export const POST = handler;"):
+                with self.subTest(mode=mode, route=route), tempfile.TemporaryDirectory() as tmp:
+                    project = Path(tmp)
+                    (project / "pipeline").mkdir()
+                    if mode is not None:
+                        (project / "pipeline/01-tina-blueprint.json").write_text(json.dumps({"editing_mode": mode}))
+                    (project / "tina").mkdir()
+                    (project / "tina/config.ts").write_text('const user = { name: "Site Admin" };')
+                    if route is not None:
+                        route_path = project / "src/pages/tina-island/[name].ts"
+                        route_path.parent.mkdir(parents=True)
+                        route_path.write_text(route)
+                    # Never install or invoke the real build in this preflight test.
+                    (project / "node_modules").mkdir()
+                    bin_dir = project / "bin"
+                    bin_dir.mkdir()
+                    npx = bin_dir / "npx"
+                    npx.write_text("#!/bin/sh\necho TEST_BUILD_REACHED\nexit 1\n")
+                    npx.chmod(0o700)
+                    result = subprocess.run(
+                        ["bash", str(ROOT / "phases/tinacms-local-build.sh")],
+                        cwd=project, text=True, capture_output=True,
+                        env={**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]},
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    if mode == "admin-blocks" or route == "export const POST = handler;":
+                        self.assertIn("TEST_BUILD_REACHED", result.stdout)
+                        self.assertIn("reason=tinacms_build_failed", result.stdout)
+                    else:
+                        reason = "no_tina_island_route" if route is None else "island_route_must_export_post"
+                        self.assertIn("reason=" + reason, result.stdout)
+                        self.assertNotIn("TEST_BUILD_REACHED", result.stdout)
+
     def test_tinacms_local_build_requires_login_and_bridge_artifacts(self) -> None:
+        self._assert_tinacms_local_build_island_preflight_respects_editing_mode()
         text = (ROOT / "phases/tinacms-local-build.sh").read_text()
         self.assertIn('fail "no_admin_login_html"', text)
         self.assertIn('fail "no_tina_bridge"', text)
@@ -1658,6 +1722,7 @@ class AstroStaticRegressionTests(unittest.TestCase):
             self.assertIn("pages.home.sections.hero-home.backgroundImage", result.stdout)
 
     def test_tina_coverage_is_required_for_build_phase(self) -> None:
+        self._assert_validator_coverage_requirement_respects_editing_mode()
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             self._write_minimal_tina_project(project)

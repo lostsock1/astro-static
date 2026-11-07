@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import importlib.util
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 # Prefer the real jsonschema library — it supports oneOf/anyOf/allOf, format,
 # pattern, additionalProperties:false, $defs refs, etc. The hand-rolled fallback
@@ -964,6 +968,207 @@ def validate_gitignore_safety(project_root: Path, issues: list[Issue]) -> None:
         ))
 
 
+def validate_installed_tina_matrix(project_root: Path, issues: list[Issue]) -> None:
+    """Check the installed graph, not just unrelated package.json version floors.
+
+    Use the project's semver implementation (already supplied by the Tina CLI).
+    Nothing is installed, and no application/configuration code is executed.
+    """
+    modules = project_root / 'node_modules'
+    if not modules.exists():
+        return
+    names = ('@tinacms/cli', '@tinacms/datalayer', '@tinacms/graphql')
+    manifests = {}
+    for name in names:
+        path = modules / name / 'package.json'
+        try:
+            manifests[name] = json.loads(path.read_text())
+        except (OSError, ValueError):
+            issues.append(Issue('error', 'package.json', f'installed Tina matrix missing/invalid {name}/package.json; install the complete tested stack'))
+    if len(manifests) != len(names):
+        return
+    # semver handles caret, tilde, exact, comparators, unions and prereleases.
+    script = r'''
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.argv[1];
+const semver = require(require.resolve('semver', {paths: [root, path.join(root, 'node_modules/@tinacms/cli')]}));
+const docs = JSON.parse(fs.readFileSync(0, 'utf8'));
+const owners = ['@tinacms/cli', '@tinacms/datalayer'];
+const ranges = owners.map(name => docs[name].dependencies?.['@tinacms/graphql']);
+const errors = [];
+if (ranges.some(range => !semver.validRange(range))) {
+  errors.push('installed CLI/datalayer must declare verifiable @tinacms/graphql dependency ranges');
+} else {
+  if (!semver.intersects(ranges[0], ranges[1]))
+    errors.push('installed CLI/datalayer @tinacms/graphql dependency ranges have no intersection');
+  const candidates = [{name: 'project', doc: docs['@tinacms/graphql']}];
+  // Also inspect owner-local copies: a hoisted compatible package does not fix
+  // an incompatible nested CLI copy actually used by the admin compiler.
+  for (const owner of owners) {
+    const file = path.join(root, 'node_modules', owner, 'node_modules/@tinacms/graphql/package.json');
+    if (fs.existsSync(file)) candidates.push({name: owner, doc: JSON.parse(fs.readFileSync(file, 'utf8'))});
+  }
+  for (const candidate of candidates) {
+    for (let i = 0; i < owners.length; i++) {
+      if (!semver.valid(candidate.doc.version) || !semver.satisfies(candidate.doc.version, ranges[i]))
+        errors.push(`installed ${candidate.name} @tinacms/graphql@${candidate.doc.version} does not satisfy ${owners[i]} ${ranges[i]}`);
+    }
+  }
+}
+console.log(JSON.stringify(errors));
+'''
+    try:
+        result = subprocess.run(['node', '-e', script, str(project_root.resolve())],
+                                input=json.dumps(manifests), text=True, capture_output=True, timeout=15)
+        if result.returncode:
+            raise ValueError('node/semver check failed')
+        messages = json.loads(result.stdout)
+        for message in messages:
+            issues.append(Issue('error', 'package.json', message))
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        issues.append(Issue('error', 'package.json', 'installed Tina dependency intersection UNVERIFIED; local Node + semver are required (no automatic/global installs)'))
+
+
+def validate_tina_router(tina_content: str, overlay_mode: bool, issues: list[Issue]) -> None:
+    """Admin forms must not enter the preview iframe through any router value."""
+    content = re.sub(r'/\*[\s\S]*?\*/|^\s*//[^\n]*', '', tina_content, flags=re.MULTILINE)
+    routers = list(re.finditer(r'''(?:\brouter|["']router["'])\s*(?P<kind>:|\(|(?=[,}]))''', content))
+    active = [match for match in routers if match.group('kind') != ':' or
+              not re.match(r'\s*undefined\s*(?=[,}]|$)', content[match.end():])]
+    if not overlay_mode and active:
+        issues.append(Issue('error', 'tina/config.ts', 'admin-blocks must omit collection ui.router functions (including aliases/methods); omit router or set router: undefined to keep document clicks in the form editor'))
+    elif overlay_mode and not active:
+        issues.append(Issue('error', 'tina/config.ts', 'maximum TinaCMS visual editing requires collection ui.router entries that open the live preview route'))
+
+
+def video_shot_list_not_requested(pipeline_dir: Path) -> bool:
+    brief = _load_pipeline_json(pipeline_dir / '01-creative-brief.json')
+    state = _load_pipeline_json(pipeline_dir / '00-pipeline-state.json')
+    if not isinstance(brief, dict) or not isinstance(state, dict):
+        return False
+    motion = brief.get('motion_direction')
+    phases = state.get('phases')
+    phase = phases.get('3_6_video_generation') if isinstance(phases, dict) else None
+    return (isinstance(motion, dict) and motion.get('video_backgrounds') is False
+            and isinstance(phase, dict) and phase.get('status') in {'skipped', 'not_requested'})
+
+
+def cms_source_revision(project_root: Path) -> str:
+    """Use the gate's exact content identity, never an unrelated git HEAD."""
+    spec = importlib.util.spec_from_file_location('cms_roundtrip_contract', _HERE / 'phases/cms-roundtrip.py')
+    if spec is None or spec.loader is None:
+        raise ValueError('CMS gate unavailable')
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    try:
+        return gate.source_revision(project_root.resolve())
+    except gate.GateError as exc:
+        raise ValueError('CMS source identity unavailable') from exc
+
+
+def validate_cms_completion_evidence(project_root: Path, pipeline_dir: Path, issues: list[Issue]) -> None:
+    """New briefs opt in. Legacy/build-only projects never gain a write requirement."""
+    brief = _load_pipeline_json(pipeline_dir / '00-brief.json')
+    requirements = brief.get('validation_requirements') if isinstance(brief, dict) else None
+    if not isinstance(requirements, dict) or requirements.get('cms_roundtrip') is not True:
+        return
+    report_name = 'cms-roundtrip-report.json'
+    report = _load_pipeline_json(pipeline_dir / report_name)
+    browser = _load_pipeline_json(pipeline_dir / 'cms-browser-evidence.json')
+    attestation = _load_pipeline_json(pipeline_dir / 'cms-staging.json')
+    connection = _load_pipeline_json(pipeline_dir / 'vps-connection.json')
+
+    def fail(artifact: str, reason: str) -> None:
+        issues.append(Issue('error', artifact, f'CMS persistence UNVERIFIED: {reason}; required CMS completion needs human-review (no production content mutations)'))
+
+    if not isinstance(report, dict):
+        fail(report_name, 'missing operator-authorized staging report')
+        return
+    try:
+        schema = load_json(SCHEMA_DIR / 'cms-roundtrip-report.schema.json')
+        schema_issues: list[Issue] = []
+        validate_value(report, schema, schema, '$', schema_issues, report_name)
+        if schema_issues:
+            fail(report_name, 'report does not match the redacted evidence schema')
+    except (OSError, ValueError):
+        fail(report_name, 'report schema unavailable')
+    validate_secret_permissions(pipeline_dir / report_name, report_name, issues)
+    if (report.get('schema_version') != 'astro-static-cms-roundtrip/v1'
+             or report.get('status') != 'PASS' or report.get('environment') != 'staging'
+            or report.get('mutation_outcome') != 'CONFIRMED'
+            or report.get('operator_authorized') is not True or report.get('recovery_path') is not None):
+        fail(report_name, 'staging PASS with operator attestation required')
+    phases = report.get('phases')
+    for phase in ('preflight', 'authenticate', 'baseline', 'backup', 'save', 'persist',
+                  'live', 'restore', 'restore_persist', 'restore_live', 'source_revision'):
+        if not isinstance(phases, dict) or not isinstance(phases.get(phase), dict) or phases[phase].get('status') != 'PASS':
+            fail(report_name, f'{phase} is not PASS')
+    evidence = report.get('evidence')
+    if (not isinstance(evidence, dict) or evidence.get('rebuild_proof') != 'persisted_settings_and_changed_live_header_html'
+            or not re.fullmatch(r'[0-9a-f]{64}', str(evidence.get('original_sha256', '')))
+            or not re.fullmatch(r'[0-9a-f]{64}', str(evidence.get('saved_sha256', '')))
+            or not re.fullmatch(r'[0-9a-f]{64}', str(evidence.get('restored_sha256', '')))
+            or evidence.get('saved_sha256') in {evidence.get('original_sha256'), evidence.get('restored_sha256')}):
+        fail(report_name, 'save/rebuild/publish/restore proof incomplete')
+    # Tina can reserialize JSON when restoring a value. Semantic restoration is
+    # proved below by the canonical whole-source revision, not raw byte equality.
+    try:
+        revision = cms_source_revision(project_root)
+    except (OSError, ValueError):
+        fail(report_name, 'current source cannot be fingerprinted safely')
+        return
+    if (report.get('source_revision') != revision or requirements.get('cms_source_revision') != revision):
+        fail(report_name, 'current source revision differs from report or explicit brief approval')
+    if not isinstance(attestation, dict) or attestation.get('schema_version') != 'astro-static-cms-staging/v1' or attestation.get('authorized_by_operator') is not True or attestation.get('environment') != 'staging':
+        fail('cms-staging.json', 'explicit staging authorization required')
+        attestation = {}
+    deployment = connection.get('deployment') if isinstance(connection, dict) else None
+    if not isinstance(deployment, dict):
+        fail(report_name, 'current deployment binding missing from connection metadata')
+        deployment = {}
+    target = requirements.get('cms_target_site_url')
+    stage = report.get('origin')
+    def safe_origin(value: Any) -> bool:
+        if not isinstance(value, str) or any(ord(c) <= 32 for c in value) or '\\' in value:
+            return False
+        try:
+            parsed = urlsplit(value)
+            return (parsed.scheme in {'http', 'https'} and bool(parsed.hostname)
+                    and parsed.username is None and parsed.password is None
+                    and parsed.path == '' and not parsed.query and not parsed.fragment)
+        except ValueError:
+            return False
+    if not safe_origin(stage) or not safe_origin(target) or stage == target:
+        fail(report_name, 'distinct canonical staging and target origins required')
+    connection_url = connection.get('site_url') if isinstance(connection, dict) else None
+    if not isinstance(connection_url, str) or connection_url.rstrip('/') != target or deployment.get('site_url') != target:
+        fail(report_name, 'target deployment origin mismatch')
+    if attestation.get('site_url') != stage or attestation.get('source_revision') != revision:
+        fail(report_name, 'operator staging origin/source mapping mismatch')
+    if deployment.get('source_revision') != revision:
+        fail(report_name, 'current deployment source revision mismatch')
+    if any(pipeline_dir.glob('.cms-roundtrip-*')):
+        fail(report_name, 'private recovery pending; resolve before completing CMS')
+    lock = pipeline_dir / '.cms-roundtrip.lock'
+    if lock.exists():
+        try:
+            with lock.open('rb') as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(handle, fcntl.LOCK_UN)
+        except OSError:
+            fail(report_name, 'staging gate active or lock unreadable')
+    if not isinstance(browser, dict):
+        fail('cms-browser-evidence.json', 'real-browser authenticated form-navigation evidence missing')
+        return
+    if (browser.get('schema_version') != 'astro-static-cms-browser/v1' or browser.get('status') != 'PASS'
+            or not isinstance(browser.get('browser'), str) or not browser['browser'].strip()
+            or any(browser.get(key) is not True for key in ('authenticated', 'document_form', 'navigation'))):
+        fail('cms-browser-evidence.json', 'real-browser login/form/navigation proof incomplete')
+    if browser.get('origin') != target or browser.get('source_revision') != revision:
+        fail('cms-browser-evidence.json', 'browser target/source deployment binding mismatch')
+
+
 def validate_tina_tsconfig(project_root: Path, issues: list[Issue]) -> None:
     tsconfig = project_root / 'tsconfig.json'
     if not tsconfig.exists():
@@ -1008,6 +1213,7 @@ def validate_tina_auth_user_shape(tina_content: str, issues: list[Issue]) -> Non
 def validate_tina_admin_artifacts(project_root: Path, issues: list[Issue]) -> None:
     admin_dir = project_root / 'admin'
     required_files = [
+        ('public/admin/login.html', project_root / 'public/admin/login.html'),
         ('admin/index.html', project_root / 'admin/index.html'),
         ('admin/login.html', project_root / 'admin/login.html'),
         ('admin/bridge.js', project_root / 'admin/bridge.js'),
@@ -1476,7 +1682,15 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
         check_layout = require_all
         check_asset_paths = require_all
 
+    # Default to the strict overlay contract for legacy/missing-mode blueprints.
+    _blueprint_doc = _load_pipeline_json(pipeline_dir / '01-tina-blueprint.json')
+    overlay_mode = not (isinstance(_blueprint_doc, dict) and _blueprint_doc.get('editing_mode') == 'admin-blocks')
+
     for artifact, schema in ARTIFACTS.items():
+        if artifact == '03-tina-coverage.json' and not overlay_mode and not (pipeline_dir / artifact).exists():
+            continue
+        if artifact == '02-video-shot-list.json' and artifact in optional and not (pipeline_dir / artifact).exists() and video_shot_list_not_requested(pipeline_dir):
+            continue
         if artifact in required:
             validate_artifact(project_root, pipeline_dir, artifact, schema, issues, missing_is_error=True, check_asset_paths=check_asset_paths)
         elif artifact in optional:
@@ -1495,8 +1709,6 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
     # editing via the Tina admin blocks field, no overlay. overlay (legacy) =
     # data-tina-field / tina-island / requestWithMetadata click-to-edit.
     # Default is overlay so legacy projects + fixtures keep the strict contract.
-    _blueprint_doc = _load_pipeline_json(pipeline_dir / '01-tina-blueprint.json')
-    overlay_mode = not (isinstance(_blueprint_doc, dict) and _blueprint_doc.get('editing_mode') == 'admin-blocks')
     if overlay_mode:
         validate_tina_coverage_contract(pipeline_dir, phase_name, issues)
 
@@ -1596,6 +1808,8 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
 
     if phase_name in {'build', 'final'} or require_all:
         validate_gitignore_safety(project_root, issues)
+    if phase_name == 'final' or require_all:
+        validate_cms_completion_evidence(project_root, pipeline_dir, issues)
 
     package_json = project_root / 'package.json'
     if package_json.exists():
@@ -1608,6 +1822,8 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
         if phase_name in {'build', 'final'} or require_all:
             validate_package_matrix(deps, issues)
         has_tina = '@tinacms/astro' in deps or 'tinacms' in deps
+        if has_tina and (phase_name in {'assets', 'build', 'final'} or require_all):
+            validate_installed_tina_matrix(project_root, issues)
         if has_tina:
             tina_config = project_root / 'tina/config.ts'
             astro_config = project_root / 'astro.config.mjs'
@@ -1624,8 +1840,7 @@ def validate_project(project_root: Path, phase_name: str | None, require_all: bo
                 if 'authProvider' not in tina_content or 'PasswordAuthProvider' not in tina_content:
                     issues.append(Issue('error', 'tina/config.ts', 'self-hosted TinaCMS config must set authProvider with PasswordAuthProvider'))
                 validate_tina_auth_user_shape(tina_content, issues)
-                if 'router:' not in tina_content:
-                    issues.append(Issue('error', 'tina/config.ts', 'maximum TinaCMS visual editing requires collection ui.router entries that open the live preview route'))
+                validate_tina_router(tina_content, overlay_mode, issues)
                 # Check build config — publicFolder must be "." so admin SPA
                 # lands at ./admin/ (project root), not inside dist/client/
                 # which gets wiped by astro build.

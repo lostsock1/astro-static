@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "astro-static/cms-roundtrip-report.schema.json",
+  "title": "Redacted staging CMS roundtrip evidence",
+  "type": "object",
+  "required": ["schema_version", "status", "environment", "origin", "source_revision", "operator_authorized", "recovery_path", "mutation_outcome", "phases", "evidence"],
+  "properties": {
+    "schema_version": {"const": "astro-static-cms-roundtrip/v1"},
+    "status": {"enum": ["PASS", "FAIL", "UNVERIFIED", "MANUAL_REVIEW"]},
+    "environment": {"const": "staging"},
+    "origin": {"type": "string", "minLength": 1},
+    "source_revision": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "operator_authorized": {"type": "boolean"},
+    "recovery_path": {"type": ["string", "null"]},
+    "mutation_outcome": {"enum": ["CONFIRMED", "INDETERMINATE", "NOT_ATTEMPTED"]},
+    "phases": {"type": "object", "additionalProperties": {"type": "object", "required": ["status"], "properties": {"status": {"enum": ["PASS", "FAIL", "SKIPPED"]}}}},
+    "evidence": {"type": "object"}
+  },
+  "additionalProperties": true
+}

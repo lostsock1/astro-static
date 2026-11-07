@@ -430,7 +430,8 @@ Read `pipeline/00-brief.json` and `pipeline/01-creative-brief.json`. Look for:
 **Step 3: Decide**
 
 - **No issues:** Mark phase completed, proceed to Phase 2.6.
-- **Issues found:** Write `pipeline/HUMAN_REVIEW.md`, set `needs_human_review: true`, HALT.
+- **Warnings/advisories:** record a tracked follow-up in `pipeline/generation-report.md` with severity, owner and next action; mark the phase completed and continue. An advisory flag alone must not set `needs_human_review` or halt.
+- **Genuine blockers:** unresolved rights/licensing, essential missing media, factual ambiguity about business/content, required approvals, explicit `_requires_human_confirmation`, or `review_flags` with blocking severity require `pipeline/HUMAN_REVIEW.md`, `needs_human_review: true`, and HALT. Never synthesize business facts or override an operator's choice to clear a blocker. Clear stale advisory-only review state with an audit note; never clear genuine blockers without their resolution.
 
 **HUMAN_REVIEW.md template:**
 ```markdown
@@ -896,6 +897,14 @@ The build-deployer runs `python3 ~/.config/opencode/astro-static/validate-pipeli
 
 Invoke the extracted script from the project root:
 
+Set the caller/tool timeout above the script's **overall** inner budget, not just
+its HTTP-attempt timeout. The current 600-second default requires **at least
+620 seconds** (620000 ms), not the earlier 400-second guidance. For a custom
+`ASTRO_STATIC_PUSH_BUDGET_SECONDS`, allow at least that overall budget + 10 seconds.
+Never use a 120-second caller timeout.
+If overriding the inner budget, increase the outer timeout too; preserve the
+structured status rather than killing a still-valid fallback attempt.
+
 ```bash
 cd "$PROJECT_DIR"
 OUTPUT=$(bash ~/.config/opencode/astro-static/phases/push-gitea.sh 2>&1)
@@ -928,7 +937,56 @@ After deployment, the `git-sync-${PROJECT_NAME}` watcher auto-rebuilds on file-b
 
 **Step 7: Update state**
 
-Mark `4_3_build_deploy.status = "completed"` only after build-deployer returns `STATUS:BUILD_DEPLOY_OK`, `push-gitea.sh` returns `STATUS:PUSH_OK` or `STATUS:NOTHING_TO_COMMIT`, and the live-site verification returns `STATUS:SITE_LIVE`. Keep the edit minimal and never write secrets into status files.
+Mark `4_3_build_deploy.status = "completed"` only after build-deployer returns `STATUS:BUILD_DEPLOY_OK`, `push-gitea.sh` returns `STATUS:PUSH_OK` or `STATUS:NOTHING_TO_COMMIT`, and live verification returns `STATUS:SITE_LIVE`, with the usable-editor gate below resolved when CMS completion is required. Keep the edit minimal and never write secrets into status files.
+
+#### Current usable-editor gate (same phase IDs)
+
+Keep source files identical across the authorized staging and target deployments.
+For the staging Astro build, explicitly inject `ASTRO_DEPLOYMENT_ENVIRONMENT=staging`
+and `ASTRO_STAGING_SITE_URL` set to the operator-approved staging origin; production
+uses the resolved default origin without those staging flags. Never edit source
+URLs just to run staging tests, since that invalidates the source binding. The
+scaffold validates these environment-selected origins; preserve that contract.
+
+Require a real browser login → authenticated admin → collection → document fields
+and typed-block controls → back-to-collection navigation. HTTP 200/build/smoke is
+not editor evidence. Use an available browser CLI following its current `--help`;
+no mandatory browser skill. Admin-blocks MUST omit collection `ui.router` functions
+(or use `router: undefined`) and all frontend metadata/island/marker runtime;
+explicit overlay MUST retain router, metadata loaders, islands and marker proof.
+
+Persistence has **no production content mutations**. Require a staged reversible
+save → fresh reload → file-backed change → rebuild/publish → rendered-value check
+→ restore and verify original. Before any write, an operator must explicitly
+authorize the staging target and supply private `pipeline/cms-staging.json` with
+`schema_version`, `environment: "staging"`, the exact canonical staging `site_url`,
+and `authorized_by_operator: true`. Never auto-create the attestation or derive it
+from live connection metadata. Follow the phase's current `--help` and schema for
+deployment hooks. Inject `TINA_ADMIN_PASSWORD` privately, not as a CLI argument or
+logged command, then invoke:
+
+```bash
+python3 ~/.config/opencode/astro-static/phases/cms-roundtrip.py --environment staging --allow-write \
+  --project-root "$PROJECT_DIR" --site-url "$STAGING_SITE_URL"
+```
+
+Keep recovery backups private and excluded from sync/push. Accept evidence only
+with the gate's deterministic `source_revision` and a verified mapping to the target
+deployment. The final validator enforces `validation_requirements.cms_roundtrip`
+for new briefs: operator-approved `cms_source_revision` + `cms_target_site_url`,
+matching connection `deployment.{site_url,source_revision}`, the private staging
+attestation, the owner-only PASS report and actual browser evidence. Consult
+`references/pipeline-contract.md` for exact fields. A staging copy alone does not
+prove this production deployment. Missing
+authorization, evidence or mapping means **CMS persistence UNVERIFIED** and
+human-review for required CMS completion; never silently mark CMS done. A failed
+restore is a blocker, not a reason for another blind write.
+
+Set the CMS gate's caller timeout to **at least 600 seconds** with default budgets
+(larger if custom verification budgets require it), never 120 seconds. Timeout
+does not mean PASS. Preserve MANUAL_REVIEW/recovery data; hard-killed rollback
+requires operator recovery, not a blind retry. Never add staging authorization or
+strict-validation requirements retroactively to an already-completed legacy site.
 
 ### Phase 5: Publish Result
 
@@ -940,10 +998,23 @@ Phase 5 is the publication/handoff phase. It compiles the run's outcome, writes 
 
 **Step 3 — Operator completion summary.** Present a final summary directly to the operator in this session containing:
 - the live **Site URL**, **Gitea URL**, and **TinaCMS admin + login** URLs;
-- the **credentials** to log in (TinaCMS admin + Gitea), read from `pipeline/vps-connection.json` / `pipeline/installation-summary.md`;
+- labeled **credentials retrieval/copy commands** for TinaCMS admin + Gitea from the private `pipeline/vps-connection.json`, never the secret values themselves or field names presented as passwords;
 - the full **Generation Report** — problems, bugs, gaps, inefficiencies, each with severity and any follow-up the operator still owns.
 
-**Secret handling for the summary:** credentials may be shown to the operator **in this interactive session** and persisted only in the owner-only `0600` files (`pipeline/vps-connection.json`, `pipeline/installation-summary.md`). Never write credentials into `pipeline/RESULT.md`, `pipeline/STATUS.md`, `pipeline/generation-report.md`, or anything pushed to Gitea.
+**Secret handling for the summary:** never print/log secrets, including in this
+interactive session. Credentials persist only in owner-only `0600` files. Never write credentials into `pipeline/RESULT.md`, `pipeline/STATUS.md`, `pipeline/generation-report.md`, or anything pushed to Gitea. Give the operator clearly labeled commands to copy an actual non-empty credential to their clipboard, for example on macOS (operator runs these privately, with shell tracing disabled):
+
+```bash
+# TinaCMS admin password → clipboard (no terminal output)
+python3 -c 'import json,sys; from pathlib import Path; p=Path("pipeline/vps-connection.json"); assert p.stat().st_mode & 0o777 == 0o600; v=json.loads(p.read_text()).get("tina_admin_password"); assert isinstance(v,str) and v, "Credential unavailable; recover privately"; sys.stdout.write(v)' | pbcopy
+# Gitea password → clipboard (no terminal output)
+python3 -c 'import json,sys; from pathlib import Path; p=Path("pipeline/vps-connection.json"); assert p.stat().st_mode & 0o777 == 0o600; v=json.loads(p.read_text()).get("gitea_pass"); assert isinstance(v,str) and v, "Credential unavailable; recover privately"; sys.stdout.write(v)' | pbcopy
+```
+
+Also identify the Gitea username field (`gitea_user`) and login URL without
+presenting a field name as its value. If the clipboard tool is unavailable, offer
+an equivalent private clipboard/password-manager workflow; do not fall back to
+printing secrets. Missing values require private recovery, not guessed passwords.
 
 ### Failure Handling
 
@@ -1078,7 +1149,7 @@ done
 TinaCMS is the standard CMS path for astro-static sites. Public pages remain statically prerendered; only editor/admin surfaces use the Astro Node adapter.
 
 - `/admin/*` — generated Tina admin SPA, built **locally** on the control node (Phase 4.2) at `admin/` and published by build-deployer. Caddy serves this directly from `${SITE_DIR}/admin/`, NOT from `dist/client/admin/` (which `astro build` wipes).
-- `/tina-island/*` — on-demand visual-editing island refresh endpoint.
+- `/tina-island/*` — explicit overlay mode only; omit entirely for default admin-blocks.
 - `/api/tina/*` — self-hosted Tina GraphQL backend using `@tinacms/datalayer`, `MemoryLevel` (pure JS, no native bindings), and the `FilesystemBridge`. Content is indexed in-memory on server start.
 - Never emit Sveltia/Decap files (`public/admin/config.yml`).
 - Do not hand-author `admin/index.html`; TinaCMS generates it via `tinacms build`.
@@ -1130,7 +1201,7 @@ After Phase 5 passes, write `pipeline/RESULT.md`:
 
 ## Credentials
 - **Credentials are not printed in this report.** RESULT.md is safe to keep or commit — it never contains passwords, tokens, or keys.
-- The operator is shown the live credentials in the session at completion (Phase 5, Step 3). They persist only in owner-only `0600` files — `pipeline/vps-connection.json` and `pipeline/installation-summary.md` — which stay gitignored and never go to public logs, tickets, or Gitea.
+- At completion the operator receives labeled private clipboard/retrieval commands, never printed secret values. Credentials persist only in owner-only `0600` files — `pipeline/vps-connection.json` and `pipeline/installation-summary.md` — which stay gitignored and never go to public logs, tickets, or Gitea.
 
 ## Installation Diagnostics
 - Full installation log: `pipeline/installation.log` when available.
