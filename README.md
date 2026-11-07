@@ -2,9 +2,9 @@
 
 # 🛰️ astro-static
 
-### From one sentence to a live, visually-editable website — built and deployed by a team of AI agents.
+### From one sentence to a live, editable website — built and deployed by a team of AI agents.
 
-*A multi-agent [OpenCode](https://opencode.ai) pipeline that researches your brand, extracts design DNA, generates the visuals, writes an **Astro 7 + Tailwind v4** site with self-hosted **TinaCMS** visual editing, and ships it to **your own VPS** — with a contract check at every single step.*
+*A multi-agent [OpenCode](https://opencode.ai) pipeline that researches your brand, extracts design DNA, generates the visuals, writes an **Astro 7 + Tailwind v4** site with self-hosted **TinaCMS** block editing, and ships it to **your own VPS** — with a contract check at every single step.*
 
 <br/>
 
@@ -14,7 +14,7 @@
 ![SSR](https://img.shields.io/badge/Astro-Node%20SSR-2C2255?logo=node.js&logoColor=white)
 ![Deploy](https://img.shields.io/badge/deploy-Debian%20VPS-0A0A0A?logo=debian&logoColor=white)
 ![Gitea](https://img.shields.io/badge/source-Gitea%20%2B%20Caddy-609926?logo=gitea&logoColor=white)
-![Tests](https://img.shields.io/badge/regression%20tests-112%20passing-3FB950)
+![Tests](https://img.shields.io/badge/regression%20tests-115%20baseline-3FB950)
 ![Fail-closed](https://img.shields.io/badge/pipeline-fail--closed-blue)
 
 </div>
@@ -37,7 +37,7 @@ Under the hood it's not one prompt. It's a **coordinated team of eleven speciali
 |---|---|
 | 🧠 **Brand-aware** | Researches the business, extracts design tokens from reference sites & Instagram, writes a real creative brief |
 | 🎨 **Generated visuals** | Logo, favicons, OG image, theme CSS, content images (AI or scraped), optional looping video backgrounds & a branded hero intro |
-| ✏️ **Actually editable** | Self-hosted TinaCMS visual editing — click any text/image on the live site and edit it. No "lorem ipsum you can't change." |
+| ✏️ **Actually editable** | Self-hosted TinaCMS typed block forms by default; click-to-edit overlays are a separate explicit legacy mode. No "lorem ipsum you can't change." |
 | ⚡ **Modern stack** | Astro 7 islands, Tailwind v4 CSS-first theming, statically prerendered pages with SSR only where Tina needs it |
 | 🚀 **Real deployment** | Your Debian VPS, Caddy auto-TLS, Gitea source control, a systemd SSR service, smoke-tested live |
 | 🌐 **Instant domain** | Free `*.sslip.io` hostname on first deploy — real DNS, real HTTPS, zero registrar — upgrade to your domain later with one step |
@@ -69,10 +69,10 @@ flowchart LR
     ADM -->|rsync over SSH| SSR
     CADDY --> SSR
     CADDY --> GITEA
-    SSR -->|admin + tina API| ED["Visual editor in the browser"]
+    SSR -->|admin + tina API| ED["Block editor in the browser"]
 ```
 
-**Why this split?** The 2 GB VPS would get OOM-killed building the Tina admin SPA, so that happens on your Mac. Public pages are statically prerendered; only the `/admin` and `/api/tina/*` routes run through the Node SSR adapter. The result is fast static delivery *and* live editing.
+**Why this split?** The 2 GB VPS would get OOM-killed building the Tina admin SPA, so that happens on your Mac. Public pages are statically prerendered; the admin SPA is served as static assets and `/api/tina/*` runs through the Node SSR adapter. The result is fast static delivery and browser-based editing.
 
 ---
 
@@ -132,7 +132,7 @@ The centerpiece. Before a single asset is generated or a line of code is written
 pipeline/01-tina-blueprint.json   ←  the editable-surface contract
 ```
 
-Everything downstream is *derived* from it — Tina collections, Astro content schemas, block renderers, image/video field references, the `data-tina-field` click-to-edit markers — and then `pipeline/03-tina-coverage.json` is produced to **prove every editable field is actually wired end to end.**
+Everything downstream is *derived* from it — Tina collections, Astro content schemas, block renderers and image/video field references. The default `editing_mode: admin-blocks` uses typed forms in the admin and no public editing runtime or collection preview routers. Only explicit legacy `overlay` mode adds `data-tina-field`, islands and `pipeline/03-tina-coverage.json`. Structural checks do not prove that a save reaches the published page: that requires an authorized reversible staging roundtrip.
 
 ```mermaid
 flowchart LR
@@ -141,8 +141,9 @@ flowchart LR
     BP --> C2["Astro schemas + seed content"]
     BP --> C3["block renderers"]
     BP --> C4["image / video field refs"]
-    BP --> C5["data-tina-field markers"]
-    C1 & C2 & C3 & C4 & C5 --> COV["03-tina-coverage.json — proof"]
+    BP -. "overlay only" .-> C5["data-tina-field markers"]
+    C1 & C2 & C3 & C4 --> ADMIN["Typed admin forms + staged save/rebuild gate"]
+    C5 --> COV["Overlay coverage proof"]
 ```
 
 This single decision is what kills the classic "looks done, isn't editable" failure mode.
@@ -160,7 +161,7 @@ This single decision is what kills the classic "looks done, isn't editable" fail
 | `pipeline/02-image-shot-list.json` | Image plan with `field_ref` mappings |
 | `pipeline/02-video-shot-list.json` | Optional video plan with `field_ref` mappings |
 | `pipeline/02-asset-manifest.json` | Generated assets, defaults, Tina media metadata |
-| `pipeline/03-tina-coverage.json` | Schema / content / renderer / island / marker proof |
+| `pipeline/03-tina-coverage.json` | Legacy overlay-only schema / content / renderer / island / marker proof |
 | `pipeline/vps-connection.json` | Connection + credentials (`0600`, gitignored, never printed) |
 
 Every one is schema-validated by `validate-pipeline.py`. JSON Schemas live in `agents/astro-static/schemas/`.
@@ -195,7 +196,7 @@ One primary orchestrator owns phase state and dispatch; ten subagents do the spe
 |---|---|
 | Framework | **Astro 7** (islands, content collections) |
 | Styling | **Tailwind v4** — CSS-first `@theme {}` tokens |
-| CMS / editor | **Self-hosted TinaCMS** with visual editing (`@tinacms/datalayer`, `MemoryLevel`, `FilesystemBridge`) |
+| CMS / editor | **Self-hosted TinaCMS** typed block forms; optional legacy overlays (`@tinacms/datalayer`, `MemoryLevel`, `FilesystemBridge`) |
 | Runtime | Static prerender + **Astro Node SSR** for `/admin` and `/api/tina/*` |
 | Images | Sharp WebP/AVIF at build · pngquant/jpegoptim · LQIP placeholders |
 | Server | **Debian 13** · **Caddy** (auto-TLS) · **Gitea** · systemd SSR service |
@@ -236,13 +237,13 @@ Give it a brief and a server it can SSH to:
 }
 ```
 
-**3. Get back live URLs** — site, Gitea repo, and `…/admin/` visual editor. Edit content in the browser; the `git-sync` watcher auto-commits and rebuilds.
+**3. Get back live URLs** — site, Gitea repo, and `…/admin/` block editor. Edit content in the browser; the `git-sync` watcher auto-commits and rebuilds. The CMS persistence claim requires the staging acceptance gate below, not just a successful login or HTTP 200.
 
 ---
 
 ## 🗂️ Repository layout & sync
 
-This repo is the **single source of truth** — no duplicated copies. `sync.sh` installs each part into its OpenCode location and can detect drift.
+This repo is the **single source of truth**. `sync.sh` installs separate copies into OpenCode and can detect drift. An old installed `agents/astro-static/scripts/` directory is not the active runtime; scripts run from `~/.config/opencode/astro-static/`.
 
 ```text
 .
@@ -279,10 +280,10 @@ This repo is the **single source of truth** — no duplicated copies. `sync.sh` 
 `validate-pipeline.py` is the enforcement layer — ~40 checks across six phase gates, backed by **115 regression tests** that encode real failures found in live runs. It rejects, among many others:
 
 - a Tina blueprint that's missing before assets/codegen, or missing settings/nav/footer fields
-- visible text with no Tina field marker, or media paths not backed by a Tina/content/manifest field
+- visible text with no Tina field marker in legacy overlay mode, or media paths not backed by a Tina/content/manifest field
 - hardcoded marketing copy arrays or service bullets
 - an invalid Tina auth provider shape (the infamous `undefined.name` crash)
-- a Tina island route exporting `ALL` instead of `POST`
+- a legacy overlay Tina island route exporting `ALL` instead of `POST`
 - SSR deploy checks wrongly demanding `dist/client/index.html`
 - generated output, logs, env files, or **secrets** being pushed to Gitea
 - a `package.json` that drifts off the tested release line
@@ -291,6 +292,50 @@ This repo is the **single source of truth** — no duplicated copies. `sync.sh` 
 python3 agents/astro-static/scripts/test_regressions.py
 # Ran 115 tests — OK
 ```
+
+The baseline suite is supplemented by scaffold, operational, contract and staged-CMS regression modules. Run **all** `test_*.py` modules before publishing; the baseline count alone is not the full hardening test result. For the generated endpoint execution tests, set `SCAFFOLD_NODE_MODULES` to a disposable scaffold's installed `node_modules`; without those dependencies that test explicitly reports a skip.
+
+Bootstrap defaults to `TINA_EDITING_MODE=admin-blocks`. Only an explicit `TINA_EDITING_MODE=overlay` generates legacy preview routers and a bootstrap island endpoint. Match this choice to the generated blueprint; do not mix editing modes.
+
+### Staged CMS acceptance
+
+Use an explicitly authorized staging deployment with its own source tree and credentials. The gate requires `pipeline/cms-staging.json` attesting the staging environment, matching site URL and explicit operator authorization, in addition to the CLI write opt-in; it does not manufacture that authorization. It changes a visible settings field, verifies file persistence and changed served HTML, restores the original value, and verifies restoration. The password comes from the staging service environment, never an argument or public report.
+
+Keep the deployed source identical: the generated Astro config accepts a distinct
+build-time origin only with both `ASTRO_DEPLOYMENT_ENVIRONMENT=staging` and an
+explicit `ASTRO_STAGING_SITE_URL`. Production keeps its default resolved origin.
+This allows source-bound staging proof without weakening trusted-origin checks or
+changing source URLs between deployments. The gate selects exactly one standard
+settings document (`global.json` or `site.json`), rejecting ambiguity before writes.
+
+```bash
+# Compute the staging source identity without making requests or writes:
+python3 ~/.config/opencode/astro-static/phases/cms-roundtrip.py \
+  --project-root /var/www/sites/STAGING-PROJECT --print-source-revision
+
+# Only AFTER creating the operator attestation shown below:
+# on the staging host, with TINA_ADMIN_PASSWORD supplied securely in the environment:
+python3 ~/.config/opencode/astro-static/phases/cms-roundtrip.py \
+  --environment staging --allow-write \
+  --project-root /var/www/sites/STAGING-PROJECT \
+  --site-url https://STAGING-HOST
+```
+
+After confirming the staging target, the operator creates this attestation using the actual origin and computed fingerprint (not the placeholders):
+
+```json
+{
+  "schema_version": "astro-static-cms-staging/v1",
+  "environment": "staging",
+  "site_url": "https://STAGING-HOST",
+  "authorized_by_operator": true,
+  "source_revision": "sha256:<computed staging fingerprint>"
+}
+```
+
+Allow at least 600 seconds for the default save/restore verification windows. If interrupted with unresolved recovery, stop for operator review; never blindly rerun over the recovery backup. Keep the staging attestation, roundtrip reports, locks and recovery directories private and out of source publication.
+
+Unit tests of this gate are not proof that a real site's watcher works. Until real staging evidence exists, report CMS persistence as **UNVERIFIED** and retain the required completion review. Never run this against a live client page merely to obtain a green status.
 
 <details>
 <summary><b>🔬 Inner workings</b> — the engineering that makes it reliable</summary>
@@ -317,7 +362,7 @@ The schemas, validators, agent prompts, references, and regression tests are **o
 
 ```bash
 # full pre-publish check
-python3 agents/astro-static/scripts/test_regressions.py        # 115 tests
+python3 -m unittest discover -s agents/astro-static/scripts -p 'test_*.py' -v
 S=agents/astro-static/scripts
 python3 -m py_compile $S/validate-pipeline.py $S/test_regressions.py $S/phases/tina-blueprint.py
 bash -n $S/setup-vps.sh $S/bg-bootstrap.sh

@@ -93,6 +93,15 @@
       "type": "object",
       "additionalProperties": true
     },
+    "validation_requirements": {
+      "type": "object",
+      "properties": {
+        "cms_roundtrip": {"type": "boolean"},
+        "cms_source_revision": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "cms_target_site_url": {"type": "string", "format": "uri"}
+      },
+      "additionalProperties": true
+    },
     "design_references": {
       "type": "object",
       "additionalProperties": true
@@ -103,8 +112,8 @@
     },
     "instagram_use": {
       "type": "string",
-      "enum": ["design_reference", "brand_research", "both", "content", "content_images", "media", "photos"],
-      "description": "How to use the Instagram handle: as a design reference (Phase 1), brand research (Phase 2), content/media source (Phase 3.5/3.6), or multiple roles"
+      "enum": ["skip", "design_reference", "brand_research", "both", "content", "content_images", "media", "photos"],
+      "description": "Operator choice; skip means no extraction and no invented handle. Other values select design, brand, content/media, or multiple roles."
     }
   },
   "additionalProperties": true

@@ -460,7 +460,17 @@ Content is file-backed under `src/content/<collection>/`. Render with `getCollec
 
 ---
 
-## 6. TinaCMS Static Visual Editing
+## 6. TinaCMS Editing Modes
+
+**Default `admin-blocks`:** use `references/decoupled-blocks/` for published
+content/typed block rendering. Omit collection `ui.router` functions (even one
+returning undefined enters the preview path); omission or `router: undefined`
+keeps documents in the form editor. No frontend `requestWithMetadata`,
+`TinaIsland`, `tina-island` route or `data-tina-field`. The self-hosted admin
+backend and content schema still apply. Sections 8's preview/island/page examples
+and all marker/island examples below are **explicit overlay mode only**; do not
+copy that runtime into admin-blocks. Section 9's schema structure works in both
+modes but its marker-based render examples are overlay-only.
 
 Generated astro-static sites use TinaCMS as the CMS path:
 
@@ -469,12 +479,11 @@ Generated astro-static sites use TinaCMS as the CMS path:
 - Use `@astrojs/node` standalone adapter for on-demand editor routes.
 - `tina/config.ts` mirrors `src/content.config.ts` collection names and fields. Each Tina collection declares `format` explicitly and it matches the seeded file extension (`.md` ↔ `format: 'md'`, `.mdx` ↔ `format: 'mdx'`, `.json` ↔ `format: 'json'`).
 - `tina/config.ts` must use a custom `PasswordAuthProvider` (extending `AbstractAuthProvider` from `tinacms`) — NOT `LocalAuthProvider`. `LocalAuthProvider` only sets a localStorage flag and does not interact with the backend session. The custom provider's `authenticate()` redirects to `/admin/login.html`, `getUser()` probes `/api/tina/auth-check` (GET → 200/401) and returns `false` when unauthorized or a user object with `name`/`email` when authorized, `getToken()` returns `{ id_token: "" }`, and `logout()` calls `/api/tina/logout` then redirects to login. Never return boolean `true` from `getUser()` — Tina reads `user.name` and crashes with `Cannot read properties of undefined (reading 'name')`.
-- Every page/section collection must define `ui.router` so document clicks open the live visual editor route, not just the form editor.
-- Every Tina data loader must wrap generated query results in `requestWithMetadata()`. On SSR/server code, do not call the generated Tina HTTP client with relative `/api/tina/gql`; use the local database client or manually construct `{ data, query, variables }` so Node does not fail URL parsing.
-- Every visible editable DOM node must carry `data-tina-field={tinaField(source, 'fieldName')}`. This is what enables click-to-edit outlines/focus in the preview.
+- **Overlay only:** every page/section collection defines `ui.router` to open the live visual editor route. Admin-blocks forbids router functions and opens the form editor.
+- **Overlay only:** Tina data loaders wrap results in `requestWithMetadata()`. SSR code uses the local database client or `{ data, query, variables }`, not relative HTTP fetches.
+- **Overlay only:** visible editable nodes carry `data-tina-field={tinaField(source, 'fieldName')}` for click-to-edit.
 - For maximum Wix-like editing, model pages as ordered blocks/sections so editors can add, remove, and reorder components within the supported design system. Tina does component/block editing, not freeform canvas dragging.
-- Use `@tinacms/astro/TinaIsland.astro` to wrap editable regions.
-- Keep `export const prerender = false` on `src/pages/tina-island/[name].ts` and `src/pages/api/tina/[...routes].ts`.
+- **Overlay only:** use `TinaIsland.astro` and an on-demand `tina-island/[name].ts` route. Both modes keep `prerender = false` on the self-hosted API route.
 - Self-host production saves through `@tinacms/datalayer` with `MemoryLevel` (pure JS, no native bindings — Bun can't load `better-sqlite3`), `FilesystemBridge` for file I/O, and a `gitProvider` that writes through the filesystem bridge. Content is indexed in-memory on server start (~1s for small sites).
 - `tinacms build` generates `admin/index.html` and `tina/__generated__/`; do not hand-author generated admin files. **The admin SPA is built locally on the control node (Phase 4.2), NOT on the VPS** — the 2GB VM OOM-kills esbuild. The `admin/` directory is published by build-deployer and served by Caddy from `${SITE_DIR}/admin/`.
 - `tina/config.ts` build config MUST be `{ outputFolder: "admin", publicFolder: "." }` so the admin SPA lands at project root, not inside `dist/client/` (which `astro build` wipes).
@@ -483,11 +492,30 @@ Generated astro-static sites use TinaCMS as the CMS path:
 - TinaCMS projects produce SSR output through `@astrojs/node` even when public pages are mostly static. `dist/server/entry.mjs` is valid build output; deployment and smoke tests must not require `dist/client/index.html` when SSR is present.
 - Smoke testing SSR must fetch the live `SITE_URL` while using local `dist/client` for CSS/media existence checks. The canonical contract is `SITE_URL="$SITE_URL" SITE_DIR="$SITE_DIR" bash smoke.sh` from the site root.
 
-Latest compatible baseline as of 2026-06-23: `astro@^7.0.2`, `@astrojs/node@^11.0.0`, `@astrojs/mdx@^7.0.0`, `@astrojs/react@^6.0.0`, `@astrojs/sitemap@^3.7.3`, `@tinacms/astro@^0.5.0`, `tinacms@^3.9.3`, `@tinacms/cli@^2.5.1`, `@tinacms/datalayer@^2.0.25`, `memory-level@^1.0.0`, `tailwindcss@^4.3.1`, `@tailwindcss/vite@^4.3.1`.
+The verified generated scaffold uses these exact core pins (2026-11-07):
+`astro@7.4.7`, `@astrojs/node@11.1.11`, `@astrojs/react@6.0.6`,
+`@astrojs/mdx@7.0.8`, `@astrojs/sitemap@3.7.3`, `@astrojs/check@0.9.12`,
+`@tinacms/astro@0.5.1`, `tinacms@3.15.1`, `@tinacms/cli@2.7.0`,
+`@tinacms/datalayer@2.0.29`, `@tinacms/graphql@2.4.11`, `graphql@16.15.0`,
+`@emnapi/runtime@1.11.3`, `memory-level@1.0.0`, `tailwindcss@4.3.5`,
+`@tailwindcss/vite@4.3.5`. Retain the full scaffold manifest's other pins too.
+Legacy package-range floors are not proof of compatibility: when dependencies
+are installed, the validator checks the CLI/datalayer GraphQL range intersection
+and actual root/nested GraphQL versions using local semver. A later compatible
+version must satisfy both actual dependency ranges; do not independently bump
+one package or use unbounded `latest` to clear a failure. No global installs.
+
+Generate durable `public/admin/login.html` from the shared auth template before
+Phase 4.2, which copies it to served `admin/login.html`. Final validation requires
+both. Real browser authentication/form navigation and explicitly authorized,
+reversible staging persistence proof are separate from HTTP/build smoke; see
+`references/pipeline-contract.md` for opt-in final-gate report bindings.
 
 ### Astro 7 compatibility guardrails
 
-Astro 7 upgrades the generated-project baseline to Vite 8 and a Rust `.astro` compiler. This improves build speed, but it does not make content editable: Tina field modeling, `requestWithMetadata()`, `TinaIsland`, and `data-tina-field` coverage remain mandatory.
+Astro 7 upgrades to Vite 8 and a Rust `.astro` compiler; that does not make content editable. Content modeling remains
+mandatory in both modes; `requestWithMetadata()`, islands and field-marker proof
+remain mandatory only for explicit overlay. Admin-blocks omits that runtime.
 
 For generated source:
 
@@ -529,7 +557,10 @@ export default defineConfig({
 
 ## 8. Complete tina/config.ts auth baseline
 
-Every generated Tina config must include a custom password auth provider and visual-editor router entries:
+Every generated config uses the shared password auth template. The following
+preview config is **overlay-only**; admin-blocks uses the same auth provider but
+omits its router, islands and metadata. Do not copy stale auth examples over the
+shared template's cookie/origin/request-policy implementation:
 
 ```ts
 import { AbstractAuthProvider, defineConfig } from 'tinacms';
@@ -594,7 +625,7 @@ The backend `/api/tina/[...routes].ts` MUST expose three extra routes:
 - `logout` (POST → clears cookie)
 - `auth-check` (GET → 200 if session valid, 401 if not)
 
-### TinaCMS Island Route (critical)
+### TinaCMS Island Route (overlay only; omit for admin-blocks)
 
 `src/pages/tina-island/[name].ts` MUST export a `POST` handler using `experimental_createIslandRoute`. Without this, the bridge's `primeIslands()` fetch returns 404 and the edit panel never populates with form fields.
 
@@ -892,7 +923,7 @@ export default defineConfig({
         name: 'page',
         label: 'Pages',
         path: 'src/content/pages',
-        ui: { router: ({ document }) => `/${document._sys.filename === 'index' ? '' : document._sys.filename}` },
+        // admin-blocks: no ui.router. Overlay adds a live-preview route mapping.
         fields: [
           { name: 'title', type: 'string', required: true },
           { name: 'description', type: 'string' },
@@ -910,7 +941,7 @@ export default defineConfig({
         name: 'post',
         label: 'Blog Posts',
         path: 'src/content/posts',
-        ui: { router: ({ document }) => `/blog/${document._sys.filename}` },
+        // admin-blocks: no ui.router. Overlay maps to /blog/<filename>.
         fields: [
           { name: 'title', type: 'string', required: true },
           { name: 'description', type: 'string', required: true },
@@ -926,7 +957,7 @@ export default defineConfig({
         name: 'member',
         label: 'Team Members',
         path: 'src/content/members',
-        ui: { router: ({ document }) => `/team/${document._sys.filename}` },
+        // admin-blocks: no ui.router. Overlay maps to /team/<filename>.
         fields: [
           { name: 'name', type: 'string', required: true },
           { name: 'role', type: 'string' },
@@ -941,7 +972,7 @@ export default defineConfig({
         label: 'Site Settings',
         path: 'src/content/settings',
         format: 'json',
-        ui: { router: () => '/' },
+        // admin-blocks: no ui.router. Overlay maps settings to the live page.
         fields: [
           { name: 'siteName', type: 'string', required: true },
           { name: 'tagline', type: 'string' },
@@ -1269,7 +1300,7 @@ blocks:
 
 ### Key rules for complex sites
 
-1. **Every collection has `ui.router`** — so clicking a document in the admin opens the right page in the preview iframe.
+1. **Mode-aware navigation:** admin-blocks omits collection router functions; overlay adds route mappings to live preview pages.
 2. **Block `_template` field** — TinaCMS auto-adds `_template` to discriminated block objects. The Astro Zod schema must use `z.discriminatedUnion('_template', [...])` to match.
 3. **Settings collection uses `format: 'json'`** — singleton-style config doesn't need markdown body. Use `*.json` and `glob({ pattern: '*.json' })` in the loader.
 4. **One `[...slug].astro` route** handles all pages — no need for separate `about.astro`, `contact.astro` files. Each page is a content entry.
@@ -1298,7 +1329,7 @@ Before submitting code, verify NONE of these exist:
 - [ ] `@astrojs/tailwind` → REPLACE with `@tailwindcss/vite`
 - [ ] `output: 'hybrid'` → REPLACE with `output: 'static'`
 - [ ] Tina config without `authProvider: new PasswordAuthProvider()` → ADD it; never use `LocalAuthProvider` or allow TinaCloud sign-in fallback
-- [ ] Tina collections without `ui.router` → ADD route mapping so content opens the visual editor
+- [ ] Admin-blocks collection router functions → REMOVE; overlay collections missing routers → ADD live route mapping
 - [ ] Tina-rendered text/media without `data-tina-field` → ADD `tinaField()` markers to visible editable HTML elements
 - [ ] Tina data queries not wrapped in `requestWithMetadata()` → WRAP them or visual preview cannot map forms/fields
 - [ ] `<img>` without `data-tina-field` or `data-static-media` → ADD Tina image field wiring or mark decorative

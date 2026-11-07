@@ -369,6 +369,7 @@ if [[ "$DOMAIN" == "auto" || "$DOMAIN" == "none" ]]; then
     GIT_HOST="git.${SERVER_IP}.sslip.io"
     GITEA_PROXIED=true     # Caddy reverse-proxies Gitea, app.ini uses hostname
   else
+    USE_TLS=false
     GIT_HOST="${SERVER_IP}:3000"
     # Private IP — sslip.io can't resolve this externally. Fall back to
     # port-based routing (first project :80, subsequent :8081..:8099).
@@ -1394,6 +1395,13 @@ fi
 
 if ! $PROJECT_ALREADY_SCAFFOLDED; then
   cd "${SITE_DIR}"
+  TINA_EDITING_MODE="${TINA_EDITING_MODE:-admin-blocks}"
+  case "$TINA_EDITING_MODE" in
+    admin-blocks|overlay) ;;
+    *) echo "STATUS:INVALID_VPS_CONFIG reason=editing_mode"; exit 2 ;;
+  esac
+  # Scaffold sources are public; secret/state writes retain the global 077 below.
+  umask 022
 
   cat > package.json << 'PKGJSON'
 {
@@ -1408,36 +1416,67 @@ if ! $PROJECT_ALREADY_SCAFFOLDED; then
     "check": "astro check",
     "astro:dev": "astro dev --host 0.0.0.0",
     "astro:build": "astro build",
-    "tinacms:build": "tinacms build --local --skip-cloud-checks"
+    "tinacms:build": "tinacms build --local --skip-cloud-checks && cp public/admin/login.html admin/login.html"
   },
   "dependencies": {
-    "astro": "^7.0.2",
-    "@astrojs/react": "^6.0.0",
-    "@astrojs/mdx": "^7.0.0",
-    "@astrojs/node": "^11.0.0",
-    "@astrojs/sitemap": "^3.7.3",
-    "@astrojs/check": "^0.9.9",
-    "@tinacms/astro": "^0.5.0",
-    "@tinacms/datalayer": "^2.0.25",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
-    "sharp": "^0.35.2",
-    "sqlite-level": "^2.1.1",
-    "memory-level": "^1.0.0",
-    "tinacms": "^3.9.3",
-    "typescript": "^6.0.3"
+    "astro": "7.4.7",
+    "@astrojs/react": "6.0.6",
+    "@astrojs/mdx": "7.0.8",
+    "@astrojs/node": "11.1.11",
+    "@astrojs/sitemap": "3.7.3",
+    "@astrojs/check": "0.9.12",
+    "@tinacms/astro": "0.5.1",
+    "@tinacms/datalayer": "2.0.29",
+    "@tinacms/graphql": "2.4.11",
+    "graphql": "16.15.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "sharp": "0.35.5",
+    "sqlite-level": "2.1.1",
+    "memory-level": "1.0.0",
+    "tinacms": "3.15.1",
+    "typescript": "6.0.3"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.3.1",
-    "@tailwindcss/typography": "^0.5.20",
-    "@tinacms/cli": "^2.5.1",
-    "@types/node": "^26.0.0",
-    "tailwindcss": "^4.3.1"
+    "@emnapi/runtime": "1.11.3",
+    "@tailwindcss/vite": "4.3.5",
+    "@tailwindcss/typography": "0.5.20",
+    "@tinacms/cli": "2.7.0",
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "tailwindcss": "4.3.5"
   }
 }
 PKGJSON
 
-   cat > astro.config.mjs << 'ASTROCONF'
+  cat > DEPENDENCY-COMPATIBILITY.md << 'COMPAT'
+# Scaffold compatibility baseline
+
+Direct versions are pinned to the working mount-devil project's installed
+manifests and bun.lock, inspected 2026-11-07. The tested Tina intersection is
+CLI 2.7.0 + datalayer 2.0.29 + @tinacms/graphql 2.4.11 + root @emnapi/runtime
+1.11.3, with Astro 7.4.7, React 19.3.1 and Tailwind 4.3.5. These are deliberate
+pins, not a recommendation to install the latest Tina packages. Root graphql
+16.15.0 parses the operation gate; Tina retains its own graphql 15.8.0 dependency.
+Do not globally override nested GraphQL or WASM runtime versions.
+
+Known peer caveat: @tinacms/astro 0.5.1 declares Astro
+`^5.0.0 || ^6.0.0`, NOT Astro 7. Astro 7 is required by this pipeline and the
+working project was tested with that combination; upstream peer support is
+still absent. npm may reject the peer tree; do not hide that with an automatic
+force/legacy-peer-deps fallback. Bootstrap uses Bun. The scaffold retains the
+previous sitemap 3.7.3 integration (not installed in the reference project) and
+the observed sqlite-level 2.1.1; the runtime database uses memory-level instead.
+
+Direct pins do not freeze transitive dependencies. Preserve the generated lock
+and re-run check, Tina build, Astro build and editor/auth tests on updates.
+Production auth trusts only astro.config.mjs `site` (including auto-resolved
+sslip.io/IP origins); update it when moving domains and rebuild. Never derive
+editor trust or Secure cookies from incoming Host/X-Forwarded-* headers.
+COMPAT
+
+   cat > astro.config.mjs << ASTROCONF
 import { defineConfig } from "astro/config";
 import node from "@astrojs/node";
 import react from "@astrojs/react";
@@ -1446,7 +1485,21 @@ import sitemap from "@astrojs/sitemap";
 import tina from "@tinacms/astro/integration";
 import { tinaAdminDevRedirect } from "@tinacms/astro/vite";
 import tailwindcss from "@tailwindcss/vite";
+// Staging uses the identical source tree; only the approved build environment
+// changes its origin. An ambient staging URL alone never overrides production.
+const canonicalSite = process.env.ASTRO_DEPLOYMENT_ENVIRONMENT === "staging"
+  ? process.env.ASTRO_STAGING_SITE_URL : "${SITE_URL}";
+if (!canonicalSite) throw new Error("Explicit staging site URL required");
+let publicSite;
+try { publicSite = new URL(canonicalSite); }
+catch { throw new Error("Invalid configured site origin"); }
+if (!["http:", "https:"].includes(publicSite.protocol) || publicSite.username || publicSite.password || publicSite.pathname !== "/" || publicSite.search || publicSite.hash)
+  throw new Error("Configured site must be a credential-free canonical origin");
 export default defineConfig({
+  site: canonicalSite,
+  // Node binds to loopback; Caddy overwrites forwarding headers. Only this exact
+  // public host/protocol may enable Astro's forwarded client address handling.
+  security: { allowedDomains: [{ hostname: publicSite.hostname, protocol: publicSite.protocol.slice(0, -1), port: publicSite.port }] },
   output: "static",
   adapter: node({ mode: "standalone" }),
   integrations: [
@@ -1668,7 +1721,6 @@ export default defineConfig({
         label: "Pages",
         path: "src/content/pages",
         format: "md",
-        ui: { router: ({ document }) => `/${document._sys.filename === "index" ? "" : document._sys.filename}` },
         fields: [
           { name: "title", type: "string", required: true },
           { name: "description", type: "string" },
@@ -1679,7 +1731,6 @@ export default defineConfig({
         label: "Site Settings",
         path: "src/content/settings",
         format: "json",
-        ui: { router: () => "/" },
         fields: [
           { name: "siteName", type: "string", required: true },
           { name: "tagline", type: "string" },
@@ -1711,6 +1762,16 @@ export default defineConfig({
 });
 TINACONF
 
+  # Preview routers and island endpoints belong only to explicit legacy overlay.
+  if [[ "$TINA_EDITING_MODE" == "overlay" ]]; then
+  python3 - << 'TINAOVERLAY'
+from pathlib import Path
+p = Path('tina/config.ts')
+source = p.read_text()
+source = source.replace('format: "md",', 'format: "md",\n        ui: { router: ({ document }) => `/${document._sys.filename === "index" ? "" : document._sys.filename}` },')
+source = source.replace('format: "json",', 'format: "json",\n        ui: { router: () => "/" },')
+p.write_text(source)
+TINAOVERLAY
   mkdir -p src/components/islands
   cat > src/components/islands/PageIslandMarker.astro << 'TINAMARKER'
 ---
@@ -1760,6 +1821,7 @@ import { islands } from "../../lib/tina/islands";
 export const prerender = false;
 export const POST: APIRoute = experimental_createIslandRoute(islands);
 TINAISLAND
+  fi
 
   cat > tina/databaseClient.ts << 'TINADB'
 import { createDatabase } from "@tinacms/datalayer";
@@ -1846,171 +1908,209 @@ const databaseClient = {
 export default databaseClient;
 TINADB
 
+  cat > src/lib/tina/session.mjs << 'TINASESSION'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+
+export const SESSION_COOKIE = 'tina_admin_session';
+export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
+/** @param {string} value @param {boolean} secure */
+export function sessionCookie(value, secure) {
+  return `${SESSION_COOKIE}=${encodeURIComponent(value)}; Path=/; Max-Age=${value ? SESSION_MAX_AGE_SECONDS : 0}; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
+}
+export function safeEqual(a, b) {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+function signature(payload, secret) { return createHmac('sha256', secret).update(payload).digest('hex'); }
+export function createSession(secret, now = Date.now()) {
+  if (!secret) throw new Error('Admin password not configured');
+  const payload = `${now}.${randomBytes(24).toString('hex')}`;
+  return `${payload}.${signature(payload, secret)}`;
+}
+export function validSession(cookieHeader, secret, now = Date.now()) {
+  if (!secret || !cookieHeader) return false;
+  const cookies = cookieHeader.split(';').map((part) => part.trim()).filter((part) => part.startsWith(`${SESSION_COOKIE}=`));
+  if (cookies.length !== 1) return false;
+  let raw;
+  try { raw = decodeURIComponent(cookies[0].slice(SESSION_COOKIE.length + 1)); } catch { return false; }
+  // Exact three-part format: no trailing segments, empty nonce or numeric aliases.
+  if (!/^[1-9][0-9]*\.[a-f0-9]{48}\.[a-f0-9]{64}$/.test(raw)) return false;
+  const [timestamp, nonce, signed] = raw.split('.');
+  const issued = Number(timestamp);
+  if (!Number.isSafeInteger(issued) || issued > now || now - issued > SESSION_MAX_AGE_SECONDS * 1000) return false;
+  return safeEqual(signed, signature(`${timestamp}.${nonce}`, secret));
+}
+TINASESSION
+
+  cat > src/lib/tina/request-policy.mjs << 'TINAPOLICY'
+/**
+ * Trust the configured public site, not transport URLs or forwarded headers.
+ * Local loopback origins are allowed only in Astro's development mode.
+ * @param {Request} request
+ * @param {string | undefined} site
+ * @param {boolean} dev
+ */
+export function requestPolicy(request, site, dev) {
+  const transport = new URL(request.url);
+  let trusted;
+  try {
+    trusted = dev && ['localhost', '127.0.0.1', '[::1]'].includes(transport.hostname)
+      ? transport : new URL(site || '');
+    if (!['http:', 'https:'].includes(trusted.protocol) || trusted.username || trusted.password) throw new Error('Invalid editor origin');
+  } catch {
+    return { error: 'Editor origin not configured', secure: true };
+  }
+  const secure = trusted.protocol === 'https:';
+  const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(request.method);
+  const origin = request.headers.get('origin');
+  if (isWrite && origin !== null && origin !== trusted.origin) return { error: 'Cross-origin request rejected', secure };
+  if (isWrite && request.headers.get('sec-fetch-site') === 'cross-site') return { error: 'Cross-site request rejected', secure };
+  return { error: undefined, secure };
+}
+TINAPOLICY
+
   cat > 'src/pages/api/tina/[...routes].ts' << 'TINAAPI'
-import type { APIRoute } from "astro";
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { Socket } from "node:net";
-import { IncomingMessage, ServerResponse } from "node:http";
-import { TinaNodeBackend } from "@tinacms/datalayer";
-import databaseClient from "../../../../tina/databaseClient";
+import type { APIRoute } from 'astro';
+import { Socket } from 'node:net';
+import { IncomingMessage, ServerResponse } from 'node:http';
+import { TinaNodeBackend } from '@tinacms/datalayer';
+import { parse, getOperationAST } from 'graphql';
+import databaseClient from '../../../../tina/databaseClient';
+import { safeEqual, createSession, validSession, sessionCookie } from '../../../lib/tina/session.mjs';
+import { requestPolicy } from '../../../lib/tina/request-policy.mjs';
 
 export const prerender = false;
-
-const SESSION_COOKIE = "tina_admin_session";
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
-
-function authSecret() {
-  return process.env.TINA_ADMIN_PASSWORD || "";
-}
-
-function signSession(value: string) {
-  return createHmac("sha256", authSecret()).update(value).digest("hex");
-}
-
-function safeEqual(a: string, b: string) {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return ab.length === bb.length && timingSafeEqual(ab, bb);
-}
-
-function parseCookies(header: string | undefined) {
-  return Object.fromEntries(
-    (header || "").split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
-      const [name, ...rest] = part.split("=");
-      try { return [name, decodeURIComponent(rest.join("="))]; }
-      catch { return [name, rest.join("=")]; }
-    })
-  );
-}
-
-function isSessionValid(cookieHeader: string | undefined) {
-  const secret = authSecret();
-  if (!secret) return false;
-  const raw = parseCookies(cookieHeader)[SESSION_COOKIE];
-  if (!raw) return false;
-  const [issuedAt, signature] = raw.split(".");
-  const issued = Number(issuedAt);
-  if (!Number.isFinite(issued) || !signature) return false;
-  if (Date.now() - issued > SESSION_MAX_AGE_SECONDS * 1000) return false;
-  return safeEqual(signature, signSession(issuedAt));
-}
-
-function sessionCookie(request: Request) {
-  const issuedAt = String(Date.now());
-  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
-  return `${SESSION_COOKIE}=${encodeURIComponent(`${issuedAt}.${signSession(issuedAt)}`)}; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax${secure}`;
-}
-
+const secret = () => process.env.TINA_ADMIN_PASSWORD || '';
+// The tina_admin_session cookie is signed and validated in session.mjs.
+const attempts = new Map<string, { count: number; reset: number }>();
 function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json", ...headers },
-  });
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers } });
 }
-
-async function readPassword(request: Request) {
-  try {
-    const body = await request.json();
-    return typeof body?.password === "string" ? body.password : "";
-  } catch {
-    return "";
-  }
+type TinaRequest = IncomingMessage & { body?: { query?: unknown; operationName?: string } };
+function publicQuery(req: TinaRequest) {
+  if (!req.url?.split('?')[0].endsWith('/gql')) return false;
+  const params = new URL(req.url, 'http://localhost').searchParams;
+  const query = req.method === 'GET' ? params.get('query') : req.body?.query;
+  const operationName = req.method === 'GET' ? params.get('operationName') : req.body?.operationName;
+  if (typeof query !== 'string') return false;
+  try { return getOperationAST(parse(query), operationName)?.operation === 'query'; } catch { return false; }
 }
-
-// Backend auth contract:
-// - POST /api/tina/login sets the HttpOnly tina_admin_session cookie.
-// - POST /api/tina/logout clears the cookie.
-// - GET /api/tina/auth-check lets PasswordAuthProvider decide whether /admin is logged in.
 function PasswordBackendAuthProvider() {
   return {
-    isAuthorized: async (req: IncomingMessage) => {
-      if (isSessionValid(req.headers.cookie)) return { isAuthorized: true as const };
-      return { isAuthorized: false as const, errorCode: 401, errorMessage: "Unauthorized" };
-    },
+    isAuthorized: async (req: TinaRequest) => publicQuery(req) || validSession(req.headers.cookie, secret())
+      ? { isAuthorized: true as const }
+      : { isAuthorized: false as const, errorCode: 401, errorMessage: 'Unauthorized — log in at /admin/login.html' },
   };
 }
+const tinaHandler = TinaNodeBackend({ authProvider: PasswordBackendAuthProvider(), databaseClient });
 
-const tinaHandler = TinaNodeBackend({
-  authProvider: PasswordBackendAuthProvider(),
-  databaseClient,
-});
-
-export const ALL: APIRoute = async ({ request }) => {
+export const ALL: APIRoute = async ({ request, clientAddress }) => {
   const url = new URL(request.url);
-
-  if (request.method === "POST" && url.pathname === "/api/tina/login") {
-    const expected = authSecret();
-    const provided = await readPassword(request);
-    if (!expected || provided !== expected) return json({ success: false }, 401);
-    return json({ success: true }, 200, { "Set-Cookie": sessionCookie(request) });
+  const security = requestPolicy(request, import.meta.env.SITE, import.meta.env.DEV);
+  if (security.error) return json({ error: security.error }, security.error === 'Editor origin not configured' ? 503 : 403);
+  // Bound request memory before constructing the Node request adapter.
+  const maxBytes = url.pathname.endsWith('/login') ? 4096 : 1024 * 1024;
+  if (Number(request.headers.get('content-length')) > maxBytes) return json({ error: 'Request too large' }, 413);
+  const chunks: Uint8Array[] = [];
+  let byteCount = 0;
+  if (request.body) {
+    const reader = request.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        byteCount += value.byteLength;
+        if (byteCount > maxBytes) { await reader.cancel(); return json({ error: 'Request too large' }, 413); }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
   }
+  const buffer = Buffer.concat(chunks);
+  let body: TinaRequest['body'] & { password?: unknown };
+  try { body = buffer.length ? JSON.parse(buffer.toString('utf8')) : undefined; }
+  catch { return json({ error: 'Invalid JSON' }, 400); }
 
-  if (request.method === "POST" && url.pathname === "/api/tina/logout") {
-    return json({ success: true }, 200, {
-      "Set-Cookie": `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`,
-    });
+  // POST /api/tina/login; POST /api/tina/logout; GET /api/tina/auth-check.
+  if (url.pathname === '/api/tina/login' && request.method === 'POST') {
+    const now = Date.now();
+    // Adapter-supplied address only, never untrusted forwarded headers.
+    const key = clientAddress || 'unknown';
+    for (const [address, item] of attempts) if (item.reset <= now) attempts.delete(address);
+    if (!attempts.has(key) && attempts.size >= 1000) return json({ error: 'Try again later' }, 429);
+    const attempt = attempts.get(key) || { count: 0, reset: now + 15 * 60 * 1000 };
+    if (attempt.count >= 10) return json({ error: 'Try again later' }, 429, { 'Retry-After': String(Math.ceil((attempt.reset - now) / 1000)) });
+    attempt.count++; attempts.set(key, attempt);
+    const password = typeof body?.password === 'string' ? body.password : '';
+    if (!secret() || !safeEqual(password, secret())) return json({ success: false }, 401);
+    attempts.delete(key);
+    return json({ success: true }, 200, { 'Set-Cookie': sessionCookie(createSession(secret()), security.secure) });
   }
-
-  if (request.method === "GET" && url.pathname === "/api/tina/auth-check") {
-    const authenticated = isSessionValid(request.headers.get("cookie") || undefined);
+  if (url.pathname === '/api/tina/logout' && request.method === 'POST') {
+    return json({ success: true }, 200, { 'Set-Cookie': sessionCookie('', security.secure) });
+  }
+  if (url.pathname === '/api/tina/auth-check' && request.method === 'GET') {
+    const authenticated = validSession(request.headers.get('cookie'), secret());
     return json({ authenticated }, authenticated ? 200 : 401);
   }
 
   const socket = new Socket();
-  const req = new IncomingMessage(socket);
+  const req = new IncomingMessage(socket) as TinaRequest;
   req.method = request.method;
-  req.url = `/api/tina${url.pathname.replace(/^\/api\/tina/, "")}${url.search}`;
+  req.url = `${url.pathname}${url.search}`;
   req.headers = Object.fromEntries(request.headers.entries());
-
-  if (request.body && request.method !== "GET" && request.method !== "HEAD") {
-    const bodyBuffer = Buffer.from(await request.arrayBuffer());
-    req.push(bodyBuffer);
-    const contentType = request.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      try {
-        (req as any).body = JSON.parse(bodyBuffer.toString());
-      } catch {
-        (req as any).body = undefined;
-      }
-    }
+  req.body = body;
+  if (!publicQuery(req) && !validSession(req.headers.cookie, secret())) {
+    socket.destroy();
+    return json({ error: 'Unauthorized — log in at /admin/login.html' }, 401);
   }
-  req.push(null);
+  // GET is never a mutation transport, even for an authenticated session.
+  if (request.method === 'GET' && url.pathname.endsWith('/gql') && !publicQuery(req)) {
+    socket.destroy(); return json({ error: 'Use POST for mutations' }, 405);
+  }
+  req.push(buffer.length ? buffer : null);
+  if (buffer.length) req.push(null);
 
   return new Promise<Response>((resolve) => {
-    const chunks: Buffer[] = [];
+    const responseChunks: Buffer[] = [];
     const res = new ServerResponse(req);
-
-    const originalWrite = res.write.bind(res);
-    res.write = function (chunk: any, ...rest: any[]) {
-      if (typeof chunk === "string") chunks.push(Buffer.from(chunk));
-      else if (Buffer.isBuffer(chunk)) chunks.push(chunk);
-      return originalWrite(chunk, ...rest);
-    } as any;
-
-    const originalEnd = res.end.bind(res);
-    res.end = function (chunk?: any, ...rest: any[]) {
-      if (chunk) {
-        if (typeof chunk === "string") chunks.push(Buffer.from(chunk));
-        else if (Buffer.isBuffer(chunk)) chunks.push(chunk);
-      }
-      const body = Buffer.concat(chunks);
-      const responseHeaders = new Headers();
-      const rawHeaders = res.getHeaders();
-      for (const [k, v] of Object.entries(rawHeaders)) {
-        if (v != null) responseHeaders.set(k, Array.isArray(v) ? v.join(", ") : String(v));
-      }
-      originalEnd(chunk, ...rest);
+    let settled = false;
+    const finish = (response: Response) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      request.signal.removeEventListener('abort', abort);
       socket.destroy();
-      resolve(
-        new Response(body.length > 0 ? body : null, {
-          status: res.statusCode || 200,
-          headers: responseHeaders,
-        })
-      );
+      resolve(response);
+    };
+    const abort = () => finish(json({ error: 'Request cancelled' }, 499));
+    const timeout = setTimeout(() => finish(json({ error: 'Editor request timed out' }, 504)), 30000);
+    request.signal.addEventListener('abort', abort, { once: true });
+    if (request.signal.aborted) { abort(); return; }
+    // Capture output without writing to a fake network socket.
+    res.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding | (() => void), callback?: () => void) => {
+      responseChunks.push(typeof chunk === 'string' ? Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8') : Buffer.from(chunk));
+      if (typeof encoding === 'function') encoding(); else callback?.();
+      return true;
+    }) as typeof res.write;
+    res.end = ((chunk?: string | Uint8Array, encoding?: BufferEncoding | (() => void), callback?: () => void) => {
+      if (chunk) responseChunks.push(typeof chunk === 'string' ? Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8') : Buffer.from(chunk));
+      const headers = new Headers({ 'Cache-Control': 'no-store' });
+      for (const [key, value] of Object.entries(res.getHeaders())) {
+        if (Array.isArray(value)) for (const item of value) headers.append(key, String(item));
+        else if (value != null) headers.set(key, String(value));
+      }
+      const bytes = Buffer.concat(responseChunks);
+      const status = res.statusCode || 200;
+      finish(new Response([204, 205, 304].includes(status) || request.method === 'HEAD' ? null : bytes, { status, headers }));
+      if (typeof encoding === 'function') encoding(); else callback?.();
       return res;
-    } as any;
-
-    tinaHandler(req, res);
+    }) as typeof res.end;
+    res.on('error', () => finish(json({ error: 'Editor response failed' }, 500)));
+    Promise.resolve().then(() => tinaHandler(req, res)).catch(() => {
+      console.error('[TinaCMS] Editor request failed.');
+      finish(json({ error: 'Editor unavailable. Please retry.' }, 503));
+    });
   });
 };
 TINAAPI
@@ -2037,11 +2137,12 @@ node during Phase 4.2 and published by build-deployer.</p>
 </html>
 ADMINPLACEHOLDER
 
-  # Password auth login page — TinaCMS custom backend auth gate.
+  # Password auth login page — durable source survives Tina replacing admin/.
   # The admin SPA reads collections without auth; mutations require
   # a session cookie set by this login form. The TINA_ADMIN_PASSWORD
   # env var (in /etc/default/astro-ssr-<project>) controls access.
-  cat > admin/login.html << 'LOGINHTML'
+  mkdir -p public/admin
+  cat > public/admin/login.html << 'LOGINHTML'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2086,6 +2187,7 @@ document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')
 </body>
 </html>
 LOGINHTML
+  cp public/admin/login.html admin/login.html
 
   for S in Hero Gallery Nav Footer Testimonials Contact CTA; do
     cat > "src/components/sections/${S}.astro" << COMP
@@ -2142,6 +2244,7 @@ GI
   # Install with bun: ~3-5x faster than npm install, produces bun.lockb.
   # We never commit bun.lockb to the scaffold repo (it's a per-deploy thing
   # the auto-rebuild watcher recreates if needed).
+  umask 077
   bun install --silent 2>&1 | tail -3 || warn "bun install failed — Phase 4 will retry"
 
   # Fix ownership immediately after scaffold (prevents rsync Permission denied)

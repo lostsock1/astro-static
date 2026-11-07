@@ -13,48 +13,65 @@
 #
 # Exit 0 on PUSH_OK or NOTHING_TO_COMMIT (both are fine), non-zero otherwise.
 
-set -eu
+set -euo pipefail
+umask 077
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Portable timeout: macOS doesn't ship `timeout` (it's `gtimeout` from coreutils).
-# Define a function that delegates to whatever is available, or falls back to
-# a bash watchdog that normalizes timeout exits to 124. This prevents silent
-# command-not-found failures on macOS and preserves pipeline status contracts.
-if command -v timeout >/dev/null 2>&1; then
-  _timeout() { timeout "$@"; }
-elif command -v gtimeout >/dev/null 2>&1; then
-  _timeout() { gtimeout "$@"; }
-else
-  # Bash fallback: return 124 on timeout to match GNU timeout/gtimeout.
-  # Usage: _timeout <seconds> <command> [args...]
-  _timeout() {
-    local secs="$1"; shift
-    local marker="${TMPDIR:-/tmp}/astro-static-timeout.$$.$RANDOM"
-    rm -f "$marker" 2>/dev/null || true
-    "$@" &
-    local pid=$!
-    (
-      sleep "$secs"
-      : > "$marker"
-      kill -TERM "$pid" 2>/dev/null || true
-      sleep 1
-      kill -KILL "$pid" 2>/dev/null || true
-    ) &
-    local watcher=$!
-    local status=0
-    wait "$pid" || status=$?
-    if [ -f "$marker" ]; then
-      rm -f "$marker" 2>/dev/null || true
-      wait "$watcher" 2>/dev/null || true
-      return 124
-    fi
-    kill "$watcher" 2>/dev/null || true
-    wait "$watcher" 2>/dev/null || true
-    return "$status"
-  }
+# The overall budget includes preparation, HTTP push, and the ONE fallback.
+# Callers must allow budget + 10s for process-tree cancellation/status output.
+PUSH_BUDGET_SECONDS="${ASTRO_STATIC_PUSH_BUDGET_SECONDS:-600}"
+PUSH_HTTP_SECONDS="${ASTRO_STATIC_PUSH_HTTP_SECONDS:-300}"
+PUSH_FALLBACK_SECONDS="${ASTRO_STATIC_PUSH_FALLBACK_SECONDS:-180}"
+for seconds in "$PUSH_BUDGET_SECONDS" "$PUSH_HTTP_SECONDS" "$PUSH_FALLBACK_SECONDS"; do
+  if ! [[ "$seconds" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$seconds" -gt 86400 ]; then
+    echo "STATUS:INVALID_VPS_CONFIG reason=bad_push_budget"; exit 1
+  fi
+done
+
+# Portable timeout: Python is already required for credential encoding. The
+# supervisor also handles descendants and propagates outer cancellation.
+_timeout() {
+  local rc=0
+  python3 "$SCRIPT_DIR/operations-timeout.py" "$@" || rc=$?
+  [ "$rc" -ne 124 ] || return 124
+  return "$rc"
+}
+if [ "${1:-}" != "--budget-child" ]; then
+  PUSH_DEADLINE_EPOCH=$(( $(date +%s) + PUSH_BUDGET_SECONDS ))
+  rc=0
+  _timeout "$PUSH_BUDGET_SECONDS" bash "$SCRIPT_DIR/push-gitea.sh" --budget-child "$PUSH_DEADLINE_EPOCH" || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    echo "STATUS:PUSH_TIMEOUT after ${PUSH_BUDGET_SECONDS}s — overall push/fallback budget exhausted"
+    echo "Inspect remote refs manually before retrying; cancellation cannot roll back accepted updates."
+  fi
+  exit "$rc"
 fi
+PUSH_DEADLINE_EPOCH="${2:-}"
+NOW_EPOCH=$(date +%s)
+if ! [[ "$PUSH_DEADLINE_EPOCH" =~ ^[1-9][0-9]{0,11}$ ]] \
+    || [ "$PUSH_DEADLINE_EPOCH" -gt "$((NOW_EPOCH + PUSH_BUDGET_SECONDS))" ]; then
+  echo "STATUS:INVALID_VPS_CONFIG reason=bad_push_deadline"; exit 1
+fi
+if [ "$PUSH_DEADLINE_EPOCH" -le "$NOW_EPOCH" ]; then
+  echo "STATUS:PUSH_TIMEOUT — overall push/fallback deadline already expired"; exit 124
+fi
+export GIT_TERMINAL_PROMPT=0
 
 VPS_JSON="pipeline/vps-connection.json"
 [ -f "$VPS_JSON" ] || { echo "STATUS:INVALID_VPS_CONFIG reason=missing path=$VPS_JSON"; exit 1; }
+
+# Preserve operator-owned conflict state, including linked-worktree git dirs.
+# Never abort operations or delete .git metadata to make a push appear clean.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  for state in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD sequencer; do
+    state_path=$(git rev-parse --git-path "$state")
+    if [ -e "$state_path" ]; then
+      echo "STATUS:GIT_REBASE_CONFLICT reason=in_progress_operation state=$state"
+      echo "Resolve the existing git operation manually before resuming."
+      exit 1
+    fi
+  done
+fi
 
 GITEA_URL=$(jq -r '.gitea_url // empty'  "$VPS_JSON")
 GITEA_USER=$(jq -r '.gitea_user // empty' "$VPS_JSON")
@@ -104,6 +121,7 @@ fi
 REMOTE_URL="$GITEA_URL/$GITEA_USER/$PROJECT.git"
 
 CRED_FILE="$(pwd)/pipeline/.git-credentials"
+CRED_HELPER=$(python3 -c 'import shlex,sys; print("store --file=" + shlex.quote(sys.argv[1]))' "$CRED_FILE")
 URL_PROTO=$(echo "$GITEA_URL" | sed -E 's|^(https?)://.*|\1|')
 URL_HOST_PORT=$(echo "$GITEA_URL" | sed -E 's|^https?://([^/]+).*|\1|')
 # URL-encode the password — '+' '/' '=' shouldn't appear (bg-bootstrap strips
@@ -126,47 +144,89 @@ git rev-parse --verify HEAD >/dev/null 2>&1 && PREEXISTING_HEAD=YES || true
 
 git init -b main 2>/dev/null || true
 git branch -m master main 2>/dev/null || true
-git rebase --abort 2>/dev/null || true
-rm -rf .git/rebase-merge .git/rebase-apply 2>/dev/null || true
 
 git remote set-url origin "$REMOTE_URL" 2>/dev/null \
   || git remote add origin "$REMOTE_URL"
 
-# Per-repo credential helper. --local writes to .git/config; the helper
-# itself only contains the *path* to the cred file, not the password.
-git config --local credential.helper "store --file=$CRED_FILE"
+# Reset the inherited helper chain for EVERY HTTP git operation. Merely adding
+# a local store helper lets an earlier macOS keychain helper supply stale creds.
+# These -c options are invocation-scoped: no global or persistent helper edits.
+git_network() {
+  local seconds="$1"; shift
+  _timeout "$seconds" git -c credential.helper= \
+    -c "credential.helper=$CRED_HELPER" "$@"
+}
 
-remote_bundle_push() {
+remote_bundle_push() (
   [ -n "${SSH_PORT:-}" ] && [ -n "${SSH_KEY:-}" ] && [ -n "${SSH_USER:-}" ] && [ -n "${SSH_HOST:-}" ] || return 1
   [ -f "$SSH_KEY" ] || return 1
-  git rev-parse --verify main >/dev/null 2>&1 || return 1
+  # Use one absolute deadline across bundle creation, transfer, SSH handshake,
+  # and remote work. Never reset the allowance after a slow connection. VPS
+  # and control-node clocks must be synchronized for the shared epoch bound.
+  FALLBACK_DEADLINE_EPOCH=$(( $(date +%s) + PUSH_FALLBACK_SECONDS ))
+  if [ "$FALLBACK_DEADLINE_EPOCH" -gt "$PUSH_DEADLINE_EPOCH" ]; then
+    FALLBACK_DEADLINE_EPOCH=$PUSH_DEADLINE_EPOCH
+  fi
+  bundle_timeout() {
+    local remaining=$((FALLBACK_DEADLINE_EPOCH - $(date +%s)))
+    [ "$remaining" -gt 0 ] || return 124
+    _timeout "$remaining" "$@"
+  }
+  bundle_timeout git rev-parse --verify main >/dev/null 2>&1 || return $?
 
-  LOCAL_BUNDLE=$(mktemp "${TMPDIR:-/tmp}/astro-static-push-${PROJECT}.XXXXXX.bundle") || return 1
+  BUNDLE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/astro-static-push-${PROJECT}.XXXXXX") || return 1
+  LOCAL_BUNDLE="$BUNDLE_DIR/site.bundle"
   REMOTE_BUNDLE="/tmp/astro-static-push-${PROJECT}-$(date +%s)-$$.bundle"
   REMOTE_REPO="/home/git/gitea-repositories/${GITEA_USER}/${PROJECT}.git"
 
-  cleanup_local() { rm -f "$LOCAL_BUNDLE" 2>/dev/null || true; }
-  trap cleanup_local RETURN
+  cleanup_local() { rm -f "$LOCAL_BUNDLE"; rmdir "$BUNDLE_DIR"; }
+  trap cleanup_local EXIT
+  bundle_timeout git bundle create "$LOCAL_BUNDLE" main >/dev/null || return $?
+  bundle_timeout scp -P "$SSH_PORT" -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+    "$LOCAL_BUNDLE" "$SSH_USER@$SSH_HOST:$REMOTE_BUNDLE" >/dev/null 2>&1 || return $?
 
-  git bundle create "$LOCAL_BUNDLE" main >/dev/null || return 1
-  scp -P "$SSH_PORT" -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
-    "$LOCAL_BUNDLE" "$SSH_USER@$SSH_HOST:$REMOTE_BUNDLE" >/dev/null 2>&1 || return 1
-
-  ssh -p "$SSH_PORT" -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+  bundle_timeout ssh -p "$SSH_PORT" -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
     "$SSH_USER@$SSH_HOST" \
     "set -e; \
-     TMP=\$(mktemp -d /tmp/astro-static-git-push.XXXXXX); \
-     cleanup(){ sudo rm -rf \"\$TMP\" '$REMOTE_BUNDLE'; }; \
+     DEADLINE=$FALLBACK_DEADLINE_EPOCH; TMP=; \
+     cleanup(){ if [ -n \"\$TMP\" ]; then sudo rm -rf \"\$TMP\"; fi; sudo rm -f '$REMOTE_BUNDLE'; }; \
      trap cleanup EXIT; \
+     [ \"\$DEADLINE\" -gt \"\$(date +%s)\" ] || exit 124; \
+     TMP=\$(mktemp -d /tmp/astro-static-git-push.XXXXXX); \
      test -d '$REMOTE_REPO'; \
-     sudo -u git git clone '$REMOTE_BUNDLE' \"\$TMP/repo\" >/dev/null 2>&1; \
-     sudo -u git git -C \"\$TMP/repo\" push '$REMOTE_REPO' main" >/dev/null 2>&1
-}
+     sudo chown git \"\$TMP\"; \
+     sudo chown git '$REMOTE_BUNDLE'; \
+     sudo chmod 600 '$REMOTE_BUNDLE'; \
+     run_git(){ LEFT=\$((DEADLINE - \$(date +%s))); \
+       [ \"\$LEFT\" -gt 0 ] || return 124; \
+       sudo -u git timeout --kill-after=1 \"\$LEFT\" git -c credential.helper= \"\$@\"; }; \
+     run_git clone '$REMOTE_BUNDLE' \"\$TMP/repo\" >/dev/null 2>&1; \
+     run_git -C \"\$TMP/repo\" push '$REMOTE_REPO' main" >/dev/null 2>&1
+)
+
+# Private recovery originals/authorization and local backups must never enter
+# the source snapshot, even if an earlier run already staged or tracked them.
+# Reuse this list for ignores, index cleanup, and candidate exclusions.
+PRIVATE_PATHS=(
+  'pipeline/archive/'
+  'pipeline/tooling-backup/'
+  'pipeline/.cms-roundtrip-*/'
+  'pipeline/.cms-roundtrip.lock'
+  'pipeline/.cms-report-*'
+  'pipeline/cms-staging.json'
+  'pipeline/cms-staging.json.*'
+  'pipeline/cms-roundtrip*.json'
+  'pipeline/cms-roundtrip*.json.*'
+  'pipeline/cms-roundtrip/'
+  'pipeline/03-cms-roundtrip.json'
+  'pipeline/03-cms-roundtrip*.json'
+  'pipeline/03-cms-roundtrip*.json.*'
+)
 
 # Never commit generated credentials/logs. The project repo is for the site
 # source, not VPS secrets. Keep this idempotent and local to the repo.
 touch .gitignore
-for pattern in \
+LOCAL_ONLY_PATTERNS=( \
   'node_modules/' \
   'dist/' \
   '.astro/' \
@@ -188,27 +248,29 @@ for pattern in \
   'pipeline/installation.log' \
   'pipeline/setup-wrapper.*' \
   'pipeline/RESULT.md' \
-  'pipeline/HUMAN_REVIEW.md'; do
+  'pipeline/HUMAN_REVIEW.md' )
+for pattern in "${LOCAL_ONLY_PATTERNS[@]}" "${PRIVATE_PATHS[@]}"; do
   grep -qxF "$pattern" .gitignore 2>/dev/null || printf '%s\n' "$pattern" >> .gitignore
 done
 
-# If a previous broken run already staged/tracked local-only artifacts, untrack
-# them now. Do not delete the working tree copies; just keep the Gitea source
-# repository free of dependencies, build output, secrets, and transient logs.
-git rm --cached --ignore-unmatch -r \
-  node_modules dist .astro .opencode \
-  pipeline/vps-connection.json pipeline/bootstrap-result.json pipeline/.git-credentials \
-  pipeline/vps-connection.json.* pipeline/bootstrap-result.json.* \
-  pipeline/bootstrap.log pipeline/installation-summary.md pipeline/installation.log \
-  pipeline/setup-wrapper.* pipeline/_bg-bootstrap.sh \
-  >/dev/null 2>&1 || true
-
-_timeout 30 git fetch origin main 2>/dev/null || true
+git_network 30 fetch origin main 2>/dev/null || true
 if [ "$PREEXISTING_HEAD" = "NO" ] && git rev-parse --verify origin/main >/dev/null 2>&1; then
   git reset --mixed origin/main >/dev/null
 fi
 
-git add -A -- . \
+# Do this AFTER seeding the index from origin/main: reset can reintroduce
+# previously tracked private artifacts. Preserve all working tree originals.
+UNTRACK_PATHS=()
+for pattern in "${LOCAL_ONLY_PATTERNS[@]}" "${PRIVATE_PATHS[@]}"; do
+  # gitignore directory globs end in '/', but git's index pathspec matcher
+  # needs the unsuffixed wildcard to match already-tracked children.
+  UNTRACK_PATHS+=( "${pattern%/}" )
+done
+git rm --cached --ignore-unmatch -r -- \
+  "${UNTRACK_PATHS[@]}" pipeline/_bg-bootstrap.sh \
+  >/dev/null 2>&1 || { echo "STATUS:PUSH_FAILED reason=index_cleanup_failed"; exit 1; }
+
+CANDIDATE_PATHS=( . \
   ':!node_modules/' \
   ':!dist/' \
   ':!.astro/' \
@@ -229,7 +291,35 @@ git add -A -- . \
   ':!pipeline/installation.log' \
   ':!pipeline/setup-wrapper.*' \
   ':!pipeline/RESULT.md' \
-  ':!pipeline/HUMAN_REVIEW.md' || true
+  ':!pipeline/HUMAN_REVIEW.md' )
+for pattern in "${PRIVATE_PATHS[@]}"; do
+  CANDIDATE_PATHS+=( ":!$pattern" )
+done
+
+# Explicit NUL-delimited candidates avoid git add's ignored-file advice without
+# swallowing real failures (index locks, permissions, invalid paths, etc.).
+# Literal pathspec input also handles newlines and pathspec-looking filenames.
+STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/astro-static-stage.XXXXXX")
+cleanup_stage() { rm -f "$STAGE_DIR/candidates" "$STAGE_DIR/ignored" "$STAGE_DIR/selected"; rmdir "$STAGE_DIR"; }
+trap cleanup_stage EXIT
+git ls-files --cached --others --exclude-standard -z -- "${CANDIDATE_PATHS[@]}" > "$STAGE_DIR/candidates" \
+  || { echo "STATUS:PUSH_FAILED reason=staging_candidates_failed"; exit 1; }
+git ls-files --cached --ignored --exclude-standard -z > "$STAGE_DIR/ignored" \
+  || { echo "STATUS:PUSH_FAILED reason=staging_candidates_failed"; exit 1; }
+python3 - "$STAGE_DIR" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+ignored = set((root / 'ignored').read_bytes().split(b'\0'))
+selected = dict.fromkeys((root / 'candidates').read_bytes().split(b'\0'))
+(root / 'selected').write_bytes(b''.join(p + b'\0' for p in selected if p and p not in ignored))
+PY
+if [ -s "$STAGE_DIR/selected" ]; then
+  git --literal-pathspecs add -A --pathspec-from-file="$STAGE_DIR/selected" --pathspec-file-nul \
+    || { echo "STATUS:PUSH_FAILED reason=staging_failed"; exit 1; }
+fi
+cleanup_stage
+trap - EXIT
 if git diff --cached --quiet; then
   echo "STATUS:NOTHING_TO_COMMIT"
 else
@@ -270,9 +360,9 @@ esac
 # the time we reach Phase 5 on a warm project the remote may already be ahead
 # of local HEAD. Without this rebase, push is rejected as non-fast-forward and
 # any remote content edits made between runs are lost.
-_timeout 30 git fetch origin main 2>/dev/null || true
+git_network 30 fetch origin main 2>/dev/null || true
 if git rev-parse --verify origin/main >/dev/null 2>&1; then
-  if ! _timeout 60 git pull --rebase origin main; then
+  if ! git_network 60 pull --rebase origin main; then
     echo "STATUS:GIT_REBASE_CONFLICT"
     echo "The local site has diverged from Gitea (likely a content edit on the VPS)."
     echo "Resolve the conflict manually in $(pwd) and re-run the orchestrator."
@@ -284,24 +374,32 @@ fi
 # LOW_SPEED_LIMIT is deliberately low: small VPS/Gitea links can dip below
 # 1KB/s for short stretches while still making progress. A prior 1000/30 gate
 # caused false PUSH_FAILED results on healthy but slow pushes.
-# timeout 300 is the hard ceiling regardless of activity.
+# The HTTP cap and the overall supervisor both apply regardless of activity.
 set +e
 GIT_HTTP_LOW_SPEED_LIMIT=100 \
 GIT_HTTP_LOW_SPEED_TIME=90 \
-_timeout 300 git push -u origin main
+git_network "$PUSH_HTTP_SECONDS" push -u origin main
 PUSH_EXIT=$?
 set -e
 
+BUNDLE_EXIT=0
 if [ "$PUSH_EXIT" -ne 0 ]; then
   echo "WARN:PUSH_HTTP_FAILED exit=$PUSH_EXIT — trying remote bundle fallback over SSH" >&2
   if remote_bundle_push; then
     echo "STATUS:PUSH_OK method=remote_bundle_fallback"
     exit 0
+  else
+    BUNDLE_EXIT=$?
   fi
+fi
+
+if [ "$PUSH_EXIT" -eq 124 ] || [ "$BUNDLE_EXIT" -eq 124 ]; then
+  echo "STATUS:PUSH_TIMEOUT — HTTP push or bounded bundle fallback exhausted its budget"
+  echo "Inspect remote refs manually before retrying; cancellation cannot roll back accepted updates."
+  exit 1
 fi
 
 case "$PUSH_EXIT" in
   0)   echo "STATUS:PUSH_OK"; exit 0 ;;
-  124) echo "STATUS:PUSH_TIMEOUT after 300s — Gitea accepted connection but push stalled and remote bundle fallback failed"; exit 1 ;;
   *)   echo "STATUS:PUSH_FAILED exit=$PUSH_EXIT"; exit 1 ;;
 esac

@@ -35,10 +35,14 @@ if grep -q 'return (await fetch("/api/tina/auth-check")).ok' "$PROJECT_DIR/tina/
   fail "auth_user_shape_missing"
 fi
 
-ISLAND_ROUTE="$PROJECT_DIR/src/pages/tina-island/[name].ts"
-[ -f "$ISLAND_ROUTE" ] || fail "no_tina_island_route"
-grep -q 'export const POST' "$ISLAND_ROUTE" || fail "island_route_must_export_post"
-! grep -q 'export const ALL' "$ISLAND_ROUTE" || fail "island_route_must_export_post"
+# Only explicit admin-blocks mode omits the legacy overlay island route.
+EDITING_MODE="$(jq -r '.editing_mode // "overlay"' "$PROJECT_DIR/pipeline/01-tina-blueprint.json" 2>/dev/null || printf overlay)"
+if [ "$EDITING_MODE" != "admin-blocks" ]; then
+  ISLAND_ROUTE="$PROJECT_DIR/src/pages/tina-island/[name].ts"
+  [ -f "$ISLAND_ROUTE" ] || fail "no_tina_island_route"
+  grep -q 'export const POST' "$ISLAND_ROUTE" || fail "island_route_must_export_post"
+  ! grep -q 'export const ALL' "$ISLAND_ROUTE" || fail "island_route_must_export_post"
+fi
 
 # --- step 1: ensure dependencies are installed ---
 log "Installing dependencies (if needed)..."

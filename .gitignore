@@ -12,3 +12,11 @@ pipeline/bootstrap-result.json
 pipeline/.git-credentials
 pipeline/installation*.md
 pipeline/installation.log
+pipeline/archive/
+pipeline/tooling-backup/
+pipeline/cms-staging.json
+pipeline/cms-roundtrip*.json
+pipeline/cms-roundtrip/
+pipeline/.cms-roundtrip-*/
+pipeline/.cms-roundtrip.lock
+pipeline/.cms-report-*

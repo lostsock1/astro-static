@@ -2,6 +2,100 @@
 
 This is the canonical phase graph and status grammar for the astro-static pipeline. Agent prompts, shell phases, validators, and state files must reference this document instead of maintaining divergent copies.
 
+## Editing mode and completion contract
+
+`admin-blocks` is the new-site default: no collection `ui.router` functions (omit
+or use undefined), no frontend metadata loaders, markers or island routes. Render
+content directly and edit typed blocks in admin forms. Explicit `overlay` retains
+router mappings, `requestWithMetadata`, islands, marker and coverage strictness.
+Legacy blueprints missing the mode retain strict overlay validation. Missing
+`03-tina-coverage.json` is valid only for admin-blocks; a present file is still
+schema-validated. Generate durable `public/admin/login.html` before Phase 4.2 and
+publish it as `admin/login.html`; final validation checks both.
+
+Warnings/advisories become a tracked follow-up, not an unconditional halt. Genuine
+rights/licensing issues, essential missing media, factual ambiguity and required
+approvals halt for review. Preserve explicit Instagram `skip` and no-video choices;
+never synthesize business facts. A missing optional video shot-list warning is
+suppressed only for explicit `motion_direction.video_backgrounds: false` plus
+`3_6_video_generation.status` skipped/not_requested. Missing requested media remains
+a failure. Keep all existing phase IDs.
+
+### Machine-enforced usable-editor evidence
+
+New wizard CMS briefs disclose and set `validation_requirements.cms_roundtrip: true`.
+The final gate (not codegen/build) then requires real evidence. Legacy briefs without
+that explicit requirement remain compatible; never retroactively opt them in on resume.
+Missing staging authorization/evidence means **CMS persistence UNVERIFIED** and
+human-review for required CMS completion, not a fabricated pass.
+
+1. Use a real browser for login → admin → collection → document's actual form/block
+   controls → back. No blank iframe, auth loop or JS exception. Browser CLI usage
+   follows current `--help`; no particular browser skill is mandatory.
+2. Only an operator explicitly authorizing a **distinct staging origin** may supply
+   private `pipeline/cms-staging.json`. Never auto-create it, derive it from production
+   metadata or execute production content mutations. Minimal attestation keys:
+   `schema_version: "astro-static-cms-staging/v1"`, `environment: "staging"`,
+   `authorized_by_operator: true`, `site_url` and `source_revision` as bound below.
+3. With `TINA_ADMIN_PASSWORD` injected privately, run the staging gate:
+
+   ```bash
+   python3 ~/.config/opencode/astro-static/phases/cms-roundtrip.py --environment staging --allow-write \
+     --project-root "$PROJECT_DIR" --site-url "$STAGING_SITE_URL"
+   ```
+
+   The phase atomically persists **redacted JSON** as
+   `pipeline/cms-roundtrip-report.json`, mode 0600. Never place a password on the CLI or enable shell tracing. Keep the
+   gate's recovery backups owner-only and excluded from source sync/push; a failed
+   restoration is a blocking review, not another blind write.
+   Allow at least **600 seconds** caller timeout for default budgets, or compute
+   the larger total for custom budgets. A 120-second timeout may interrupt rollback.
+   Timeout is not PASS; preserve MANUAL_REVIEW and recovery data. Hard-killed
+   recovery needs operator intervention, not a blind retry.
+4. Report schema: `cms-roundtrip-report.schema.json`, version
+   `astro-static-cms-roundtrip/v1`, `status: PASS`, `environment: staging`,
+    `operator_authorized: true`, `mutation_outcome: "CONFIRMED"`, canonical `origin`, `source_revision` and
+   `recovery_path: null`. All eleven nested phase objects must have `status: PASS`:
+   preflight, authenticate, baseline, backup, save, persist, live, restore,
+   restore_persist, restore_live, source_revision. `evidence` includes original/saved/restored SHA256
+    raw-file values (saved differs from original/restored; JSON serialization may
+    change raw bytes during restore). Canonical whole-source revision equality
+    proves semantic restoration, alongside
+   `rebuild_proof: "persisted_settings_and_changed_live_header_html"`.
+5. Report `origin` equals attestation `site_url` (canonical staging origin); both
+   carry the same `source_revision`. The brief must explicitly approve
+   `validation_requirements.cms_source_revision` and `cms_target_site_url` (distinct
+   actual target origin). After independently verifying the deployed source/build,
+   build-deployer records `deployment: {site_url, source_revision}` in private
+   `vps-connection.json`; its site_url is the actual target, not staging. The final
+   validator compares all bindings against the current source. No verified mapping
+   means UNVERIFIED; never auto-infer one from mismatched origins.
+6. Obtain exact content identity (not git HEAD) with the gate's read-only command:
+
+   ```bash
+   python3 ~/.config/opencode/astro-static/phases/cms-roundtrip.py --project-root "$PROJECT_DIR" --print-source-revision
+   ```
+
+   The gate hashes source/public/Tina files plus root config/manifest/lockfiles,
+   normalizes JSON, excludes generated caches, rejects source symlinks, and returns
+   `sha256:<64 hex>`. Validator `cms_source_revision(root)` reuses that exact
+   implementation. No local-code changes or lockfile regeneration may reuse stale
+   evidence. This is source identity, not a claim that a different VPS was built.
+7. Record redacted `pipeline/cms-browser-evidence.json`: version
+   `astro-static-cms-browser/v1`, `status: PASS`, a nonempty `browser` evidence/session
+   reference, booleans `authenticated`, `document_form`, `navigation` all true, and
+   `origin` equal to the mapped target plus matching `source_revision`.
+   Screenshots/logs must exclude passwords, cookies and tokens. An HTTP mock or unit
+   test is not real-browser evidence. Do not manufacture this artifact from a build.
+
+Keep `pipeline/.cms-roundtrip-*/recovery.json`, `pipeline/.cms-roundtrip.lock`,
+staging metadata and evidence artifacts private and gitignored/excluded from
+source sync/push. A retained recovery directory blocks final completion. The
+advisory lock file may remain after a clean run; only an active lock blocks.
+
+These checks validate required evidence and binding, not the truthfulness of a
+forged report. Only actual observed staging/browser runs may produce PASS artifacts.
+
 ## Phase Graph
 
 | Phase ID | Boundary | Required inputs | Required outputs | Notes |

@@ -192,6 +192,11 @@ _timeout 240 rsync -az --timeout=60 \
   --exclude='pipeline/bootstrap*.exit' \
   --exclude='pipeline/RESULT.md' \
   --exclude='pipeline/HUMAN_REVIEW.md' \
+  --exclude='pipeline/cms-staging.json' \
+  --exclude='pipeline/cms-roundtrip-report.json' \
+  --exclude='pipeline/cms-browser-evidence.json' \
+  --exclude='pipeline/.cms-roundtrip-*' \
+  --exclude='pipeline/.cms-roundtrip.lock' \
   --exclude='pipeline/_bg-bootstrap.sh' \
   -e "$RSYNC_SSH" \
   ./ "$USER@$HOST:$SITE_DIR/" || {
@@ -247,14 +252,80 @@ printf '%s\n' "$SMOKE_OUTPUT" | grep -q '^STATUS:SMOKE_OK' \
   || { echo "STATUS:SMOKE_FAILED reason=no_ok_status"; exit 1; }
 ```
 
-### 6. Final validation
+### 6. Current usable-editor gate (within `4_3_build_deploy`)
+
+Use a real browser to open the target `/admin/login.html`, authenticate, follow
+collection → document → fields/blocks → back to collection, and verify that the
+actual form is usable (not a blank iframe, auth loop, missing controls or console
+exception). HTTP smoke is not a browser gate. Use an available browser CLI following
+its current `--help`; do not require a particular browser skill. Never print,
+record, screenshot or log the password or cookie. For admin-blocks, no collection
+`ui.router` functions or frontend metadata/island runtime; overlay retains its
+router/metadata/island requirements.
+
+There are **no production content mutations**. Persistence is a separate staged,
+reversible CMS save/reload/file-change/rebuild/publish/render/restore gate. Only
+after explicit operator authorization of a staging origin may the operator create
+owner-only `pipeline/cms-staging.json` containing `schema_version`,
+`environment: "staging"`, exact canonical `site_url`, and
+`authorized_by_operator: true`. Never generate this attestation automatically or
+derive it from the live VPS connection. Follow the phase script's current `--help`
+for the versioned attestation schema and deployment hooks.
+
+With that independently authorized target and `TINA_ADMIN_PASSWORD` injected by a
+private environment channel (never command arguments, shell tracing or logs), run:
+
+```bash
+python3 ~/.config/opencode/astro-static/phases/cms-roundtrip.py --environment staging --allow-write \
+  --project-root "$PROJECT_DIR" --site-url "$STAGING_SITE_URL"
+```
+
+The gate must verify fresh-reload persistence, the file-backed content change,
+successful rebuild/publish and rendered value, then restore the original content
+and verify restoration. Recovery backups stay in private owner-only pipeline files
+and must not be synced/pushed. On failed restoration, stop for human review; do not
+repeat writes blindly. Read-only browser navigation may inspect production but
+never submit production content saves.
+
+Set the caller timeout to **at least 600 seconds** for default gate budgets (or
+compute a larger total for custom budgets). Never impose a 120-second outer
+timeout across save/rollback. A timeout is not PASS; preserve MANUAL_REVIEW and
+private recovery data, and do not retry blindly. SIGTERM attempts rollback;
+hard-kill/interrupted recovery needs operator recovery.
+
+The gate writes owner-only `pipeline/cms-roundtrip-report.json` with canonical
+`origin`, content-derived `source_revision: "sha256:..."`, operator authorization
+and nested phase statuses. Use its read-only `--print-source-revision` command
+to obtain that identity. After independently verifying the target build's source,
+record `deployment: {site_url, source_revision}` in private connection metadata.
+The operator's brief must explicitly approve the same
+`validation_requirements.cms_source_revision` and `cms_target_site_url`; do not
+invent deployment/approval metadata to make a report pass. Record separate actual
+browser evidence per `references/pipeline-contract.md`.
+
+Accept staging evidence only for that exact source and mapped target deployment.
+An unrelated staging copy does not prove production persistence. If authorization,
+browser access, hooks, revision/build mapping or evidence is missing, record
+**CMS persistence UNVERIFIED**, keep required CMS completion pending/human-review,
+and return that non-secret limitation instead of claiming editor success. Build
+and smoke results may still be reported separately; they cannot clear this gate.
+For strict new briefs the final validator machine-enforces this evidence. Perform
+the evidence gate before the final-validation command when authorized; if it cannot
+run, leave the final gate pending/review rather than trying to bypass it.
+
+### 6a. Final validation
+
+Final validation requires durable `public/admin/login.html` as well as published
+`admin/login.html`; rebuilding the SPA must not remove authentication access.
 
 ```bash
 python3 ~/.config/opencode/astro-static/validate-pipeline.py --phase final . --pipeline-dir pipeline/ \
   || { echo "STATUS:FINAL_VALIDATION_FAILED"; exit 1; }
 ```
 
-Do not mark `4_3_build_deploy` completed here. The orchestrator still has to publish the source snapshot to Gitea and verify the live URL after this subagent returns. The orchestrator owns the final `4_3_build_deploy` state transition after those steps succeed.
+Do not mark `4_3_build_deploy` completed here. The orchestrator still publishes the
+Gitea source snapshot and verifies the live URL after return; it owns that final
+state transition, including any required CMS evidence review.
 
 ### 7. Final output
 
@@ -270,6 +341,8 @@ Include concise evidence:
 - `dist/server/entry.mjs` exists for SSR mode or `dist/client/index.html` exists for static mode
 - smoke script emitted `STATUS:SMOKE_OK`
 - final validator exited 0
+- real browser form-navigation outcome and mapped staging persistence evidence,
+  or explicit CMS persistence UNVERIFIED (never a required CMS completion pass)
 
 ## Failure Status Tokens
 
